@@ -2,6 +2,18 @@
 
 Versione Rust per Windows del progetto [Final Converter](https://github.com/salvatorecorsi/final-converter) di Salvatore Corsi. Conversioni locali, selezioni multiple e integrazione con Esplora file. Nessun server e nessun upload.
 
+## Scarica e installa
+
+Scarica l'[ultima release Windows x64](https://github.com/salvatorecorsi/the-converter/releases/latest) e avvia il file `TheConverter-<versione>-windows-x64-setup.exe`. L'installer aggiunge il programma, il disinstaller e la voce **Converti in** del tasto destro per il tuo utente, senza richiedere privilegi amministrativi.
+
+Il setup è leggero. L'opzione consigliata scarica FFmpeg e Poppler direttamente dai distributori originali (circa 160 MB, con verifica SHA-256). Servono per audio, video e PDF; le conversioni di immagini e immagini in PDF funzionano anche senza questi download. Per riprovare o installare i motori in seguito, nel menu Start trovi **Installa o aggiorna motori di conversione**.
+
+Su Windows 11 il menu incluso in questa release compare in **Mostra altre opzioni**. Il menu moderno richiede un'identità MSIX firmata attendibile ed è descritto in [windows-integration.md](docs/windows-integration.md); la release iniziale non include un pacchetto firmato.
+
+Per rimuovere il programma usa **Impostazioni Windows → App → App installate → The Converter → Disinstalla**, oppure il collegamento nel menu Start. Le preferenze e i file convertiti restano conservati. Se Windows mantiene caricata la DLL del menu, la pulizia viene completata al successivo accesso senza riavviare Esplora file durante il lavoro.
+
+È disponibile anche l'archivio portable: estrailo in una cartella stabile, esegui `scripts/install-runtime-tools.ps1 -InstallDirectory <cartella>` per i motori e, se desideri il menu, `scripts/install-context-menu.ps1 -Mode Classic -InstallDirectory <cartella>`.
+
 ## Uso quotidiano
 
 Dal tasto destro scegli **Converti in → MP3**, **WAV**, **PDF**, ecc. La conversione rapida entra in una coda condivisa, con le preferenze salvate, e **non apre la finestra delle opzioni**. Nella cartella di destinazione compare subito un segnaposto con il nome previsto e una clessidra blu. Il menu propone i formati compatibili con la selezione.
@@ -58,7 +70,7 @@ Su Windows 11 il menu classico compare in **Mostra altre opzioni**. Il progetto 
 
 L'app cerca gli strumenti nella cartella `tools` accanto all'eseguibile, nel `PATH`, nelle impostazioni salvate e nella cartella indicata dalla variabile `THE_CONVERTER_TOOLS`. I percorsi possono essere scelti nella finestra **Strumenti**. LibreOffice viene cercato anche nella sua posizione standard di installazione.
 
-La distribuzione preparata su questa macchina include FFmpeg e Poppler. Non richiede Python, Node, WebView o un'installazione Rust per essere eseguita. LibreOffice non è incluso.
+La distribuzione locale di sviluppo può includere FFmpeg e Poppler. L'installer e l'archivio portable pubblici li scaricano separatamente dagli upstream su richiesta. L'app non richiede Python, Node, WebView o un'installazione Rust per essere eseguita. LibreOffice non è incluso.
 
 Le preferenze si trovano nella cartella di configurazione utente `SalvatoreCorsi\TheConverter\config` sotto `%APPDATA%`: `preferences.json` e `report-last.json`. Il resoconto include percorsi locali ed errori e non viene trasmesso. La conversione interattiva mantiene i propri risultati nella coda corrente.
 
@@ -76,6 +88,15 @@ cargo build --release --locked --manifest-path .\shell-extension\Cargo.toml
 ```
 
 `fetch-tools.ps1` scarica versioni fissate di FFmpeg e Poppler e ne verifica gli SHA-256 prima di copiarle; non installa nulla nel sistema. È opzionale se usi strumenti già disponibili. `scripts\build-release.ps1` esegue entrambe le compilazioni. `-CertificateThumbprint` permette di firmare l'MSIX con un certificato già disponibile. MakeAppx è necessario per generare il pacchetto identità; l'applicazione può essere usata anche senza.
+
+Per preparare gli artefatti pubblici, dopo la build:
+
+```powershell
+.\release-support\collect-rust-licenses.ps1
+.\scripts\prepare-public-release.ps1 -CompilerPath C:\Percorso\InnoSetup\ISCC.exe
+```
+
+Lo staging pubblico usa una lista esplicita di file e una verifica che rifiuta motori esterni o DLL aggiuntive. L'output in `dist/releases/v<versione>/` contiene setup, archivio portable e `SHA256SUMS.txt`. Gli avvisi delle dipendenze Rust e dei font sono inclusi in entrambi gli artefatti.
 
 ## Riga di comando
 

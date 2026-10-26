@@ -1,0 +1,11 @@
+/target/
+/.tools/
+/dist/
+/tools/
+/test-output/
+/shell-extension/target/
+*.pfx
+*.cer
+*.msix
+*.msixbundle
+*.log

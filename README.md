@@ -66,6 +66,8 @@ Per rimuoverlo:
 
 Su Windows 11 il menu classico compare in **Mostra altre opzioni**. Il progetto include anche la DLL `IExplorerCommand` e un pacchetto MSIX sparse per il **menu moderno di Windows 11**. Per registrarlo serve prima una firma attendibile del pacchetto. La build non registra DLL, non installa pacchetti e non modifica l'archivio dei certificati. La procedura completa e lo stato di verifica sono in [docs/windows-integration.md](docs/windows-integration.md).
 
+Per le prove con un certificato di sviluppo, su Windows 11 build 26200 il trust nel solo archivio utente non e risultato sufficiente. La procedura Microsoft MSIX richiede `LocalMachine\TrustedPeople`: e un'importazione manuale del certificato pubblico, separata dal setup, con privilegi amministrativi, UAC e consenso esplicito perche estende la fiducia a tutti gli utenti del PC. Su questa configurazione sono stati verificati il comando nel menu moderno e la conversione WAV → MP3 nella stessa cartella, senza finestra delle opzioni. La prova usa un certificato di sviluppo; non e una nuova release pubblica. [Dettagli e stato della prova](docs/windows-integration.md#stato-di-verifica).
+
 ## Motori e preferenze
 
 L'app cerca gli strumenti nella cartella `tools` accanto all'eseguibile, nel `PATH`, nelle impostazioni salvate e nella cartella indicata dalla variabile `THE_CONVERTER_TOOLS`. I percorsi possono essere scelti nella finestra **Strumenti**. LibreOffice viene cercato anche nella sua posizione standard di installazione.

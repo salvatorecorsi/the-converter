@@ -50,7 +50,11 @@ Per produrre una release pubblica con il menu moderno, usa una firma di produzio
 
 Questo comando si interrompe prima di creare gli artefatti se manca una firma attendibile; non produce in sua vece un setup con il solo menu classico. Include il pacchetto identita e tutti i loghi referenziati anche nell'archivio portable. Un certificato autofirmato e rifiutato per la release pubblica.
 
-Per una prova sul proprio PC e possibile usare un certificato di sviluppo. La guida Microsoft per i pacchetti con contenuto esterno prevede l'importazione del solo certificato pubblico `.cer` nell'archivio **Utente corrente → Persone attendibili** (`Cert:\CurrentUser\TrustedPeople`). E una modifica alla fiducia dell'utente, da eseguire consapevolmente e separatamente dall'installer; la chiave privata `.pfx` resta riservata. Un certificato di test non e una firma di produzione e va rimosso quando non serve piu. Non sono necessari Developer Mode o modifiche globali al menu di Windows.
+Per una prova sul proprio PC e possibile usare un certificato di sviluppo. La guida Microsoft per i pacchetti con contenuto esterno indica `Cert:\CurrentUser\TrustedPeople`, ma nella prova del 27 ottobre 2026 su **Windows 11 build 26200** questa importazione non e stata sufficiente: `Get-AuthenticodeSignature` ha continuato a restituire `UnknownError` e `Add-AppxPackage` ha rifiutato il pacchetto con `0x800B0109`.
+
+La [procedura generale Microsoft per MSIX di test](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide#testing-distribute-to-testers-with-a-self-signed-certificate) richiede invece **Computer locale → Persone attendibili** (`Cert:\LocalMachine\TrustedPeople`). Per la configurazione provata occorre questo archivio: importare manualmente il solo certificato pubblico `.cer` richiede privilegi amministrativi, conferma UAC e consenso esplicito, perche modifica la fiducia di **tutti gli utenti del PC**. La registrazione dell'applicazione resta per il solo utente corrente.
+
+Questo passaggio e separato dall'installer: il setup **non importa certificati automaticamente** e non modifica Developer Mode. Verifica provenienza e impronta del certificato prima dell'importazione; la chiave privata `.pfx` resta riservata. Un certificato di test non e una firma di produzione e va rimosso dagli archivi in cui e stato importato quando non serve piu. La disinstallazione dell'app non rimuove la fiducia nel certificato. Vedi anche la [guida Microsoft alla fiducia dei certificati di sviluppo](https://learn.microsoft.com/en-us/windows/apps/dev-tools/winapp-cli/security#what-winapp-cert-install-grants).
 
 ```powershell
 .\scripts\uninstall-context-menu.ps1 -Mode Modern -InstallDirectory .\dist\TheConverter
@@ -78,11 +82,19 @@ Lo smoke test carica la DLL reale senza registrarla, attiva gli oggetti COM e pa
 
 I test del pacchetto moderno usano fixture e comandi Appx simulati in un processo Windows PowerShell separato: coprono manifest e asset non validi, firma incoerente, `WhatIf`, registrazione ripetuta, cambio cartella e Publisher, rimozione della sola installazione indicata e propagazione degli errori. Non modificano certificati, registro o pacchetti reali.
 
-La presenza effettiva nel menu moderno va verificata dopo aver firmato e registrato il pacchetto su una macchina Windows 11. Il repository fornisce l'implementazione e la procedura di distribuzione; un MSIX non firmato non e una installazione completata. Nessuna registrazione viene eseguita automaticamente all'avvio dell'app o durante la compilazione.
+La prova locale del **27 ottobre 2026 su Windows 11 build 26200** ha completato la preparazione di DLL, pacchetto identita firmato e setup di prova; i 25 controlli del pacchetto sono passati. Il trust limitato a `CurrentUser\TrustedPeople` e stato rifiutato come descritto sopra. Dopo l'importazione esplicitamente autorizzata del certificato pubblico in `LocalMachine\TrustedPeople`, con UAC, la firma e risultata `Valid` e il setup ha registrato il pacchetto per l'utente corrente.
+
+Le verifiche in Windows PowerShell 5.1 hanno confermato una sola identita `SalvatoreCorsi.TheConverter`, versione `0.1.0.0`, con `EffectiveExternalPath` uguale alla cartella installata `%LOCALAPPDATA%\Programs\The Converter`, tutti i loghi presenti e `ModernMenuInstalled=1`. E presente la voce di disinstallazione di Windows; le precedenti chiavi del menu classico sono assenti. Eseguibile, DLL e MSIX installati corrispondono alla build di prova. La disinstallazione reale del pacchetto non e stata esercitata in questa prova.
+
+In Esplora file **Converti in** e comparso direttamente nel menu moderno, sopra **Mostra altre opzioni**. La scelta **Converti in → MP3** su `prova-audio.wav` ha creato `prova-audio.mp3` nella stessa cartella senza aprire la finestra delle opzioni; `ffprobe` ha confermato codec MP3 e durata di 2 secondi. Questo risultato riguarda la configurazione locale provata: il certificato di sviluppo non costituisce una firma di produzione e non e stata pubblicata una nuova release con quel certificato.
+
+Su altre configurazioni la presenza nel menu moderno va verificata dopo aver firmato e registrato il pacchetto su Windows 11; un MSIX non firmato non e una installazione completata. Nessuna registrazione viene eseguita automaticamente all'avvio dell'app o durante la compilazione.
 
 ## Fonti Microsoft
 
 - [Comandi di Esplora file con IExplorerCommand e manifest MSIX](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)
 - [Package identity con contenuto esterno: compilazione, firma e registrazione](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps)
 - [Firma di sviluppo e trust per pacchetti con contenuto esterno](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps#build-and-sign-the-identity-package)
+- [Distribuzione di MSIX di test e archivio LocalMachine TrustedPeople](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide#testing-distribute-to-testers-with-a-self-signed-certificate)
+- [Ambito della fiducia nei certificati di sviluppo](https://learn.microsoft.com/en-us/windows/apps/dev-tools/winapp-cli/security#what-winapp-cert-install-grants)
 - [Requisiti e comportamento del menu di Windows 11](https://blogs.windows.com/blog/2021/07/19/extending-the-context-menu-and-share-dialog-in-windows-11/)

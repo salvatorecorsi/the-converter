@@ -382,7 +382,10 @@ fn duration(input: &Path, tools: &ToolPaths, cancel: &AtomicBool) -> Option<f64>
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    let exe = tools.ffprobe.as_ref()?;
+    let exe = tools
+        .ffprobe
+        .as_ref()
+        .filter(|path| crate::tools::executable_available(path))?;
     let mut cmd = Command::new(exe);
     hidden(&mut cmd)
         .args([
@@ -842,6 +845,24 @@ fn convert_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn stored_probe_script_is_not_executed() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("ffprobe.cmd");
+        fs::write(
+            &script,
+            "@echo off\r\n@echo executed>\"%~dp0executed.txt\"\r\n@echo 1.0\r\n",
+        )
+        .unwrap();
+        let tools = ToolPaths {
+            ffprobe: Some(script),
+            ..Default::default()
+        };
+        assert!(duration(Path::new("input.wav"), &tools, &AtomicBool::new(false)).is_none());
+        assert!(!directory.path().join("executed.txt").exists());
+    }
+
     #[test]
     fn running_ffmpeg_is_cancelled_promptly() {
         let tools = ToolPaths::discover();

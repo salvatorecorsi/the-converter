@@ -71,7 +71,12 @@ fn alias_path(local_app_data: &Path, alias: &str) -> Option<PathBuf> {
     if !local_app_data.is_absolute() || !is_supported_alias_name(alias) {
         return None;
     }
-    Some(local_app_data.join("Microsoft/WindowsApps").join(alias))
+    Some(
+        local_app_data
+            .join("Microsoft")
+            .join("WindowsApps")
+            .join(alias),
+    )
 }
 
 fn is_supported_alias_name(alias: &str) -> bool {
@@ -94,14 +99,109 @@ fn belongs_to_package(executable: &Path, package_root: &Path) -> bool {
     same_path(&parent, &package_root)
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    let left = left.to_string_lossy();
-    let right = right.to_string_lossy();
-    if cfg!(windows) {
-        left.trim_start_matches(r"\\?\")
-            .eq_ignore_ascii_case(right.trim_start_matches(r"\\?\"))
-    } else {
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        windows_paths::same(left, right)
+    }
+    #[cfg(not(windows))]
+    {
         left == right
+    }
+}
+
+#[cfg(windows)]
+mod windows_paths {
+    use std::{os::windows::ffi::OsStrExt, path::Path};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLongPathNameW(short: *const u16, long: *mut u16, capacity: u32) -> u32;
+        fn CompareStringOrdinal(
+            left: *const u16,
+            left_length: i32,
+            right: *const u16,
+            right_length: i32,
+            ignore_case: i32,
+        ) -> i32;
+    }
+
+    pub fn same(left: &Path, right: &Path) -> bool {
+        let left = normalize(left.as_os_str().encode_wide().collect());
+        let right = normalize(right.as_os_str().encode_wide().collect());
+        if ordinal_equal(&left, &right) {
+            return true;
+        }
+        // ShellLink expands 8.3 names (including RUNNER~1 on CI). GetLongPathName
+        // expands names without canonicalizing an APPEXECLINK into its target EXE.
+        // Lexical equality above also keeps ordinary alias checks entirely read-only.
+        let left = long_name(&left).unwrap_or(left);
+        let right = long_name(&right).unwrap_or(right);
+        ordinal_equal(&left, &right)
+    }
+
+    fn ordinal_equal(left: &[u16], right: &[u16]) -> bool {
+        if left.len() > i32::MAX as usize || right.len() > i32::MAX as usize {
+            return false;
+        }
+        unsafe {
+            CompareStringOrdinal(
+                left.as_ptr(),
+                left.len() as i32,
+                right.as_ptr(),
+                right.len() as i32,
+                1,
+            ) == 2
+        }
+    }
+
+    fn normalize(mut path: Vec<u16>) -> Vec<u16> {
+        for unit in &mut path {
+            if *unit == b'/' as u16 {
+                *unit = b'\\' as u16;
+            }
+        }
+        if path.starts_with(&[92, 92, 63, 92]) {
+            if path.len() >= 8
+                && matches!(path[4], 85 | 117)
+                && matches!(path[5], 78 | 110)
+                && matches!(path[6], 67 | 99)
+                && path[7] == 92
+            {
+                let mut unc = vec![92, 92];
+                unc.extend_from_slice(&path[8..]);
+                return unc;
+            }
+            path.drain(..4);
+        }
+        path
+    }
+
+    fn long_name(path: &[u16]) -> Option<Vec<u16>> {
+        if path.contains(&0) {
+            return None;
+        }
+        let mut input = if path.starts_with(&[92, 92]) {
+            let mut extended: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+            extended.extend_from_slice(&path[2..]);
+            extended
+        } else if path.len() >= 3 && path[1] == b':' as u16 && path[2] == 92 {
+            let mut extended: Vec<u16> = r"\\?\".encode_utf16().collect();
+            extended.extend_from_slice(path);
+            extended
+        } else {
+            return None;
+        };
+        input.push(0);
+        let mut output = vec![0u16; 32768];
+        let length =
+            unsafe { GetLongPathNameW(input.as_ptr(), output.as_mut_ptr(), output.len() as u32) }
+                as usize;
+        if length == 0 || length >= output.len() {
+            return None;
+        }
+        output.truncate(length);
+        Some(normalize(output))
     }
 }
 
@@ -142,6 +242,33 @@ fn current_package_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn alias_comparison_normalizes_separators_extended_prefixes_and_unicode_case() {
+        let alias =
+            Path::new(r"C:\Users\Città & mare\Microsoft\WindowsApps\corsivo-the-converter.exe");
+        for equivalent in [
+            r"C:/Users/Città & mare/Microsoft/WindowsApps/corsivo-the-converter.exe",
+            r"\\?\C:\Users\Città & mare\Microsoft\WindowsApps\corsivo-the-converter.exe",
+            r"c:\users\CITTÀ & MARE\microsoft/WindowsApps\CORSIVO-THE-CONVERTER.EXE",
+        ] {
+            assert!(
+                same_path(alias, Path::new(equivalent)),
+                "Not equivalent: {alias:?} and {equivalent:?}"
+            );
+        }
+        assert!(same_path(
+            Path::new(r"\\?\UNC\server\share\WindowsApps\corsivo-the-converter.exe"),
+            Path::new("//server/share/WindowsApps/corsivo-the-converter.exe"),
+        ));
+        // Matching must keep the alias filename, never replace it with the binary
+        // under a versioned WindowsApps package directory.
+        assert!(!same_path(
+            alias,
+            Path::new(r"C:\Program Files\WindowsApps\Corsivo_1.0.0.0\the-converter.exe")
+        ));
+    }
 
     #[test]
     fn inherited_identity_does_not_make_an_external_tool_a_packaged_binary() {

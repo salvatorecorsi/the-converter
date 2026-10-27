@@ -141,7 +141,7 @@ try {
         }
     }
     Write-Host 'Building Store desktop app (isolated target directory, static CRT)...'
-    $null = Invoke-StoreNativeTool $cargoExecutable @('build', '--release', '--locked', '--bins', '--target', $target, '--manifest-path', (Join-Path $root 'Cargo.toml')) (Join-Path $logs 'cargo-app.log')
+    $null = Invoke-StoreNativeTool $cargoExecutable @('build', '--release', '--locked', '--bin', 'the-converter', '--target', $target, '--manifest-path', (Join-Path $root 'Cargo.toml')) (Join-Path $logs 'cargo-app.log')
     Write-Host 'Building packaged Explorer COM extension...'
     $null = Invoke-StoreNativeTool $cargoExecutable @('build', '--release', '--locked', '--target', $target, '--manifest-path', (Join-Path $root 'shell-extension\Cargo.toml')) (Join-Path $logs 'cargo-shell.log')
 } finally {
@@ -149,7 +149,7 @@ try {
 }
 
 $imports = [ordered]@{}
-foreach ($binary in @('the-converter.exe', 'the-converter-cli.exe', 'the_converter_shell.dll')) {
+foreach ($binary in @('the-converter.exe', 'the_converter_shell.dll')) {
     $source = Join-Path $buildRoot "$target\release\$binary"
     $imports[$binary] = (Get-StorePeImportInfo -Path $source).Imports
     if ($binary -ne 'the_converter_shell.dll') {
@@ -179,7 +179,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($package)
 try {
     if (@($zip.Entries | Where-Object { $_.FullName -ieq 'AppxSignature.p7x' }).Count -ne 0) { throw 'Store upload package must remain unsigned; unexpected package signature.' }
-    foreach ($binary in @('the-converter.exe', 'the-converter-cli.exe', 'the_converter_shell.dll', 'store-runtime.json')) {
+    foreach ($binary in @('the-converter.exe', 'the_converter_shell.dll', 'store-runtime.json')) {
         if (-not $zip.GetEntry($binary)) { throw "Full MSIX is missing packaged content: $binary" }
     }
 } finally { $zip.Dispose() }
@@ -191,7 +191,7 @@ $report = [ordered]@{
     SchemaVersion = 1; Mode = $identity.Mode; BuiltAtUtc = [DateTime]::UtcNow.ToString('o'); SourceCommit = $sourceCommit; SourceDirty = $sourceWorkingTreeDirty
     ApplicationVersion = $cargoVersion; StoreVersion = $identity.Version; Architecture = 'x64'; MinimumOSVersion = '10.0.22000.0'; Identity = $identity
     Package = $fileName; PackageSHA256 = $packageHash; Signed = $false; FullPackage = $true; ExternalContent = $false
-    EnginesBundled = $false; RuntimeDownloaderBundled = $false; CertificateStoreChanged = $false; PackageInstalled = $false
+    ApplicationCount = 1; ConsoleCliBundled = $false; EnginesBundled = $false; RuntimeDownloaderBundled = $false; CertificateStoreChanged = $false; PackageInstalled = $false
     MakeAppxValidation = 'Passed (no /nv)'; WindowsAppCertificationKit = 'Not run'; PartnerCenterUpload = 'Not performed'
     RunFullTrustJustification = 'Local Win32 file conversions, user-selected installed conversion tools and File Explorer integration. No elevation requested.'
     DependencyNoticeRecords = $components.Count; ImportedLibraries = $imports; Payload = $payload
@@ -203,10 +203,11 @@ $submissionText = @(
     ('Mode: ' + $identity.Mode), ('Package: ' + $fileName), ('SHA256: ' + $packageHash), '',
     ('Identity Name: ' + $identity.Name), ('Publisher: ' + $identity.Publisher), ('Display name: ' + $identity.DisplayName),
     ('Publisher display name: ' + $identity.PublisherDisplayName), ('Store version: ' + $identity.Version), ('Cargo version: ' + $cargoVersion),
-    ('GUI execution alias: ' + $identity.ExecutionAlias), ('CLI execution alias: ' + $identity.CliExecutionAlias), '',
+    ('GUI execution alias: ' + $identity.ExecutionAlias), '',
     'Full Windows 11 x64 MSIX (minimum build 22000), packagedClassicApp/mediumIL, visible app-list entry and packaged Explorer COM command.',
     'MakeAppx semantic validation passed without /nv. All application binaries, runtime metadata, logos and dependency notices are inside the package.',
-    'Only the application, CLI and Explorer DLL are executable payloads. No external conversion engines or PowerShell downloader are bundled.',
+    'Exactly one GUI application is declared. Its executable and the Explorer DLL are the only binary payloads; the console CLI belongs to the separate GitHub distribution.',
+    'No external conversion engines or PowerShell downloader are bundled.',
     'The package is unsigned. Microsoft Store signs accepted submissions; this build did not use a signing certificate or modify trust.', '',
     'Remaining review: Windows App Certification Kit, clean-machine app/menu/queue tests, Store listing and privacy information, runFullTrust justification and Partner Center certification.',
     'No Partner Center upload or package installation was performed.'

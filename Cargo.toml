@@ -24,7 +24,6 @@ fs2 = "0.4"
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow"] }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 lopdf = "0.38"
-open = "5"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,6 +35,9 @@ time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[target.'cfg(not(windows))'.dependencies]
+open = "5"
 
 [build-dependencies]
 winresource = "0.1"

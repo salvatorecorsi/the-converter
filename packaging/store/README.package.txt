@@ -10,9 +10,9 @@ conversion tools already installed on the computer. Select their paths in the
 application's Tools settings. FFmpeg, Poppler and LibreOffice are not included.
 This package contains no engine downloader or PowerShell installation scripts.
 
-The command-line interface can be activated through corsivo-the-converter-cli.exe
-(corsivo-the-converter-preview-cli.exe in the local Store preview). For example,
-run that alias followed by --diagnose from a terminal.
+This Microsoft Store package provides the graphical application and File Explorer
+commands. For terminal commands, use the separate portable/GitHub distribution;
+the console CLI is not included in the Store package.
 
 The Microsoft Store manages installation, updates and removal. The package
 directory is read-only; settings and queue data use the user's application-data

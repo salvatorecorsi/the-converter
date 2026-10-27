@@ -10,8 +10,9 @@ use std::sync::{
 use the_converter::{
     engine,
     model::{ConversionSettings, MediaKind, OutputFormat, VideoCodec, supported_formats},
+    platform,
     queue::{self, JobState as QuickJobState, QueueJob},
-    tools::ToolPaths,
+    tools::{ToolPaths, executable_available},
 };
 
 const ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
@@ -992,7 +993,11 @@ impl ConverterApp {
                                                     && let Some(parent) =
                                                         outputs.first().and_then(|p| p.parent())
                                                 {
-                                                    let _ = open::that(parent);
+                                                    if let Err(error) =
+                                                        platform::open_folder(parent)
+                                                    {
+                                                        self.notice = Some(format!("{error:#}"));
+                                                    }
                                                 }
                                             }
                                             JobState::Failed(_) => {
@@ -1101,7 +1106,9 @@ impl ConverterApp {
                             if ui.small_button("Apri cartella").clicked()
                                 && let Some(parent) = path.parent()
                             {
-                                let _ = open::that(parent);
+                                if let Err(error) = platform::open_folder(parent) {
+                                    self.notice = Some(format!("{error:#}"));
+                                }
                             }
                         });
                     }
@@ -1239,8 +1246,8 @@ impl ConverterApp {
                         ("soffice", "LibreOffice", "Necessario per i documenti Office in PDF. Seleziona soffice.exe nella cartella program di LibreOffice.", "https://www.libreoffice.org/download/download-libreoffice/"),
                     ] {
                         egui::Frame::new().fill(subtle_fill(ui)).corner_radius(7).inner_margin(11).show(ui, |ui| {
-                            let path = get_tool(&self.tools, key);
-                            let valid = path.as_ref().is_some_and(|path| path.is_file());
+                            let path = self.saved.overrides.get(key).cloned().or_else(|| get_tool(&self.tools, key));
+                            let valid = path.as_ref().is_some_and(|path| executable_available(path));
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(label).strong());
                                 ui.label(RichText::new(if valid { "Disponibile" } else { "Non configurato" }).small().color(if valid { GREEN } else { ui.visuals().weak_text_color() }));
@@ -1249,7 +1256,7 @@ impl ConverterApp {
                             if let Some(path) = path {
                                 ui.add(egui::Label::new(RichText::new(display_path(&path)).small()).wrap());
                                 if !valid {
-                                    ui.colored_label(ui.visuals().error_fg_color, "Il percorso salvato non è più disponibile. Seleziona di nuovo lo strumento.");
+                                    ui.colored_label(ui.visuals().error_fg_color, "Il percorso salvato non è un programma .exe disponibile. Seleziona di nuovo lo strumento.");
                                 }
                             }
                             ui.horizontal_wrapped(|ui| {
@@ -1260,9 +1267,13 @@ impl ConverterApp {
                                         .add_filter("Programmi Windows", &["exe"])
                                         .pick_file()
                                 {
-                                    self.saved.overrides.insert(key.into(), path);
-                                    self.tools = ToolPaths::configured(&self.saved.overrides);
-                                    self.settings_dirty = true;
+                                    if executable_available(&path) {
+                                        self.saved.overrides.insert(key.into(), path);
+                                        self.tools = ToolPaths::configured(&self.saved.overrides);
+                                        self.settings_dirty = true;
+                                    } else {
+                                        self.notice = Some("Seleziona un programma esistente con estensione .exe.".into());
+                                    }
                                 }
                                 if self.saved.overrides.contains_key(key)
                                     && ui.small_button("Usa rilevamento automatico").clicked()
@@ -1271,7 +1282,11 @@ impl ConverterApp {
                                     self.tools = ToolPaths::configured(&self.saved.overrides);
                                     self.settings_dirty = true;
                                 }
-                                ui.hyperlink_to("Sito ufficiale ↗", website);
+                                if ui.link("Sito ufficiale ↗").on_hover_text(website).clicked()
+                                    && let Err(error) = platform::open_website(website)
+                                {
+                                    self.notice = Some(format!("{error:#}"));
+                                }
                             });
                         });
                     }
@@ -1519,7 +1534,9 @@ impl QuickQueueView {
                                                     cancel = Some(job.id.clone());
                                                 }
                                                 if ui.small_button("Apri cartella").clicked() {
-                                                    open_job_folder(job);
+                                                    self.action_error = open_job_folder(job)
+                                                        .err()
+                                                        .map(|error| format!("{error:#}"));
                                                 }
                                             },
                                         );
@@ -1697,7 +1714,7 @@ impl eframe::App for QueueStatusApp {
                         for output in &job.outputs {
                             ui.add(egui::Label::new(RichText::new(display_path(output)).small()).wrap());
                         }
-                        if ui.button("Apri cartella di destinazione").clicked() { open_job_folder(job); }
+                        if ui.button("Apri cartella di destinazione").clicked() { self.action_error = open_job_folder(job).err().map(|error| format!("{error:#}")); }
                         if matches!(job.state, QuickJobState::Queued | QuickJobState::Running) {
                             ui.label(RichText::new("Il segnaposto con l’icona di lavorazione viene sostituito dal file pronto al termine.").small().weak());
                         }
@@ -1757,15 +1774,14 @@ fn quick_progress(progress: f32) -> f32 {
     }
 }
 
-fn open_job_folder(job: &QueueJob) {
-    if let Some(folder) = job
+fn open_job_folder(job: &QueueJob) -> anyhow::Result<()> {
+    let folder = job
         .outputs
         .first()
         .and_then(|path| path.parent())
         .or_else(|| job.input.parent())
-    {
-        let _ = open::that(folder);
-    }
+        .ok_or_else(|| anyhow::anyhow!("La cartella della conversione non è disponibile"))?;
+    platform::open_folder(folder)
 }
 
 fn settings_path() -> Option<PathBuf> {

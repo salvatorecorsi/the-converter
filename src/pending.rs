@@ -168,13 +168,7 @@ fn validate_job_id(job_id: &str) -> Result<()> {
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
-    let left = display_path(left);
-    let right = display_path(right);
-    if cfg!(windows) {
-        left.eq_ignore_ascii_case(&right)
-    } else {
-        left == right
-    }
+    crate::package::same_path(left, right)
 }
 
 fn display_path(path: &Path) -> String {
@@ -684,7 +678,12 @@ mod tests {
         assert!(pending.path().exists());
         let first = fs::read(pending.path()).unwrap();
         let read = native::read_link(pending.path()).unwrap();
-        assert!(same_path(&read.executable, &exe));
+        assert!(
+            same_path(&read.executable, &exe),
+            "Shortcut target {:?} differs from requested executable {:?}",
+            read.executable,
+            exe
+        );
         assert_eq!(read.arguments, "--queue-job job-123");
         assert!(read.description.contains("In coda"));
         assert!(read.description.contains("città & mare"));
@@ -756,6 +755,56 @@ mod tests {
     }
 
     #[test]
+    fn native_short_and_long_paths_refer_to_the_same_preview_owner() {
+        use std::{
+            ffi::OsString,
+            os::windows::ffi::{OsStrExt, OsStringExt},
+        };
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetShortPathNameW(long: *const u16, short: *mut u16, capacity: u32) -> u32;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let long: Vec<u16> = executable
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let mut short = vec![0u16; 32768];
+        let length =
+            unsafe { GetShortPathNameW(long.as_ptr(), short.as_mut_ptr(), short.len() as u32) }
+                as usize;
+        assert!(
+            length > 0 && length < short.len(),
+            "GetShortPathNameW failed for {:?}: {}",
+            executable,
+            std::io::Error::last_os_error()
+        );
+        let short = PathBuf::from(OsString::from_wide(&short[..length]));
+        assert!(
+            same_path(&short, &executable),
+            "Short path {:?} differs from long path {:?}",
+            short,
+            executable
+        );
+        let output = directory.path().join("short-name-preview.wav");
+        let pending = PendingLink::create(&output, &short, "job-short-path", "In coda").unwrap();
+        let read = native::read_link(pending.path()).unwrap();
+        assert!(
+            same_path(&read.executable, &short),
+            "ShellLink target {:?} differs from short input {:?} (long {:?})",
+            read.executable,
+            short,
+            executable
+        );
+        assert_eq!(read.arguments, "--queue-job job-short-path");
+        pending.update("Conversione: 50%").unwrap();
+        pending.remove().unwrap();
+        assert!(!pending.path().exists());
+    }
+
+    #[test]
     fn legacy_queue_records_without_a_separate_icon_binary_still_update_and_remove() {
         let dir = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
@@ -778,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_alias_raw_target_and_ownership_survive_a_change_of_icon_binary() {
+    fn stable_alias_with_mixed_separators_keeps_ownership_across_icon_binary_changes() {
         let dir = tempfile::tempdir().unwrap();
         let user = dir.path().join("utente città & mare");
         let alias = user.join("Microsoft/WindowsApps/corsivo-the-converter-preview.exe");
@@ -787,6 +836,7 @@ mod tests {
         // a real Windows alias, package registration or per-user settings.
         fs::write(&alias, []).unwrap();
         let alias = alias.canonicalize().unwrap();
+        let mixed_alias = PathBuf::from(display_path(&alias).replace('\\', "/"));
         let old_icon = dir.path().join("package-v1.exe");
         let new_icon = dir.path().join("package-v2.exe");
         fs::copy(std::env::current_exe().unwrap(), &old_icon).unwrap();
@@ -795,13 +845,13 @@ mod tests {
         let pending = PendingLink {
             output: output.clone(),
             path: PendingLink::path_for(&output),
-            executable: alias.clone(),
+            executable: mixed_alias.clone(),
             icon_executable: Some(old_icon.clone()),
             job_id: "job-stable-alias".into(),
         };
         native::save_link(
             pending.path(),
-            &alias,
+            &mixed_alias,
             &old_icon,
             &pending.job_id,
             "In coda",
@@ -818,7 +868,7 @@ mod tests {
         assert!(same_path(&read.icon, &old_icon));
         native::save_link(
             restored.path(),
-            &alias,
+            &mixed_alias,
             &new_icon,
             &restored.job_id,
             "Nuova versione",

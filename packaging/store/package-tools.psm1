@@ -12,10 +12,10 @@ function Get-StorePackageIdentity {
             if (-not $config.PSObject.Properties[$field] -or $config.$field -isnot [string] -or [string]::IsNullOrWhiteSpace($config.$field)) { throw "Missing Store identity field: $field" }
             if ($config.$field -match '(?i)(REPLACE_WITH|PLACEHOLDER|CHANGE_ME|TODO|YOUR_|StorePreview|[<>])') { throw "Store identity still contains a placeholder: $field" }
         }
-        $identity = [pscustomobject]@{ Name = $config.Name; Publisher = $config.Publisher; DisplayName = $config.DisplayName; PublisherDisplayName = $config.PublisherDisplayName; Version = $config.Version; Mode = 'submission'; ExecutionAlias = 'corsivo-the-converter.exe'; CliExecutionAlias = 'corsivo-the-converter-cli.exe' }
+        $identity = [pscustomobject]@{ Name = $config.Name; Publisher = $config.Publisher; DisplayName = $config.DisplayName; PublisherDisplayName = $config.PublisherDisplayName; Version = $config.Version; Mode = 'submission'; ExecutionAlias = 'corsivo-the-converter.exe' }
     } else {
         if ($IdentityConfig) { throw 'IdentityConfig is only accepted with -ForSubmission. Preview uses an explicitly separate identity.' }
-        $identity = [pscustomobject]@{ Name = 'Corsivo.TheConverter.StorePreview'; Publisher = 'CN=Salvatore Corsi'; DisplayName = 'The Converter Store Preview'; PublisherDisplayName = 'Corsivo'; Version = $PreviewVersion; Mode = 'preview'; ExecutionAlias = 'corsivo-the-converter-preview.exe'; CliExecutionAlias = 'corsivo-the-converter-preview-cli.exe' }
+        $identity = [pscustomobject]@{ Name = 'Corsivo.TheConverter.StorePreview'; Publisher = 'CN=Salvatore Corsi'; DisplayName = 'The Converter Store Preview'; PublisherDisplayName = 'Corsivo'; Version = $PreviewVersion; Mode = 'preview'; ExecutionAlias = 'corsivo-the-converter-preview.exe' }
     }
     if ($identity.Name -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]{1,48}[A-Za-z0-9]$') { throw 'Store package Name must contain 3-50 letters, digits, periods or hyphens.' }
     if ($identity.Publisher -notmatch '^CN=\S' -or $identity.Publisher.Length -gt 8192) { throw 'Store Publisher must be the exact Partner Center X.500 distinguished name.' }
@@ -45,9 +45,7 @@ function New-StorePackageManifest {
     $ns.AddNamespace('uap5', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/5')
     $visual = $manifest.SelectSingleNode('/p:Package/p:Applications/p:Application[@Id="TheConverter"]/uap:VisualElements', $ns)
     $visual.SetAttribute('DisplayName', $Identity.DisplayName)
-    $manifest.SelectSingleNode('/p:Package/p:Applications/p:Application[@Id="TheConverterCli"]/uap:VisualElements', $ns).SetAttribute('DisplayName', $Identity.DisplayName + ' CLI')
     $manifest.SelectSingleNode('//uap5:Extension[@Executable="the-converter.exe"]/uap5:AppExecutionAlias/uap5:ExecutionAlias', $ns).SetAttribute('Alias', $Identity.ExecutionAlias)
-    $manifest.SelectSingleNode('//uap5:Extension[@Executable="the-converter-cli.exe"]/uap5:AppExecutionAlias/uap5:ExecutionAlias', $ns).SetAttribute('Alias', $Identity.CliExecutionAlias)
     $manifest.Save($OutputPath)
 }
 
@@ -123,8 +121,8 @@ function Assert-StorePackageLayout {
     if ($capabilities.Count -ne 1 -or $capabilities[0].NamespaceURI -cne 'http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities' -or
         $capabilities[0].GetAttribute('Name') -cne 'runFullTrust') { throw 'Unexpected Store capabilities; only runFullTrust is allowed.' }
     $apps = @($manifest.SelectNodes('/p:Package/p:Applications/p:Application', $ns))
-    if ($apps.Count -ne 2) { throw 'Store package must contain a visible GUI application and a hidden CLI application.' }
-    foreach ($expectedApp in @(@('TheConverter', 'the-converter.exe'), @('TheConverterCli', 'the-converter-cli.exe'))) {
+    if ($apps.Count -ne 1) { throw 'Microsoft Store package must declare exactly one GUI application; the console CLI is excluded.' }
+    foreach ($expectedApp in ,@('TheConverter', 'the-converter.exe')) {
         $matches = @($apps | Where-Object { $_.GetAttribute('Id') -ceq $expectedApp[0] })
         if ($matches.Count -ne 1 -or $matches[0].GetAttribute('Executable') -cne $expectedApp[1] -or
             $matches[0].GetAttribute('RuntimeBehavior', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10') -cne 'packagedClassicApp' -or
@@ -133,14 +131,9 @@ function Assert-StorePackageLayout {
     }
     $visual = $manifest.SelectSingleNode('/p:Package/p:Applications/p:Application[@Id="TheConverter"]/uap:VisualElements', $ns)
     if (-not $visual -or $visual.GetAttribute('AppListEntry') -ceq 'none' -or $visual.GetAttribute('DisplayName') -cne $Identity.DisplayName) { throw 'Store application must be visible in the app list with the configured display name.' }
-    $cliVisual = $manifest.SelectSingleNode('/p:Package/p:Applications/p:Application[@Id="TheConverterCli"]/uap:VisualElements', $ns)
-    if (-not $cliVisual -or $cliVisual.GetAttribute('AppListEntry') -cne 'none' -or $cliVisual.GetAttribute('DisplayName') -cne ($Identity.DisplayName + ' CLI')) { throw 'CLI application must remain hidden from the app list.' }
-    $cliApp = $cliVisual.ParentNode
-    if ($cliApp.GetAttribute('Subsystem', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10') -cne 'console' -or
-        $cliApp.GetAttribute('SupportsMultipleInstances', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10') -cne 'true') { throw 'Console activation requires multiple-instance support.' }
     $aliasExtensions = @($manifest.SelectNodes('/p:Package/p:Applications/p:Application/p:Extensions/uap5:Extension[@Category="windows.appExecutionAlias"]', $ns))
-    if ($aliasExtensions.Count -ne 2) { throw 'Store package must declare separate GUI and CLI execution alias extensions.' }
-    foreach ($expected in @(@('the-converter.exe', $Identity.ExecutionAlias, 'windows', 'TheConverter'), @('the-converter-cli.exe', $Identity.CliExecutionAlias, 'console', 'TheConverterCli'))) {
+    if ($aliasExtensions.Count -ne 1) { throw 'Store package must declare only its GUI execution alias extension.' }
+    foreach ($expected in ,@('the-converter.exe', $Identity.ExecutionAlias, 'windows', 'TheConverter')) {
         $extension = @($aliasExtensions | Where-Object { $_.GetAttribute('Executable') -ceq $expected[0] })
         if ($extension.Count -ne 1) { throw "Execution alias target is missing or duplicated: $($expected[0])" }
         if ($extension[0].ParentNode.ParentNode.GetAttribute('Id') -cne $expected[3]) { throw 'Execution alias is attached to the wrong packaged application.' }
@@ -157,7 +150,7 @@ function Assert-StorePackageLayout {
     $verbs = @($manifest.SelectNodes('//desktop5:Verb', $ns))
     if ($classes.Count -ne 1 -or $classes[0].GetAttribute('Id') -ine $classId -or $classes[0].GetAttribute('Path') -cne 'the_converter_shell.dll' -or
         $verbs.Count -ne 1 -or $verbs[0].GetAttribute('Clsid') -ine $classId) { throw 'Invalid packaged Explorer command registration.' }
-    $required = @('AppxManifest.xml', 'the-converter.exe', 'the-converter-cli.exe', 'the_converter_shell.dll', 'store-runtime.json', 'README.txt', 'THIRD-PARTY-NOTICES.md', 'Docs\licenses\RUST-THIRD-PARTY-LICENSES.txt', 'Docs\licenses\rust-components.json')
+    $required = @('AppxManifest.xml', 'the-converter.exe', 'the_converter_shell.dll', 'store-runtime.json', 'README.txt', 'THIRD-PARTY-NOTICES.md', 'Docs\licenses\RUST-THIRD-PARTY-LICENSES.txt', 'Docs\licenses\rust-components.json')
     foreach ($relative in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $relative) -PathType Leaf)) { throw "Store layout file missing: $relative" }
     }
@@ -166,7 +159,7 @@ function Assert-StorePackageLayout {
         $image = [Drawing.Image]::FromFile((Join-Path $stage ('Assets\' + $logo.File)))
         try { if ($image.Width -ne $logo.Size -or $image.Height -ne $logo.Size) { throw "Invalid Store logo dimensions: $($logo.File)" } } finally { $image.Dispose() }
     }
-    $allowedBinaries = @('the-converter.exe', 'the-converter-cli.exe', 'the_converter_shell.dll')
+    $allowedBinaries = @('the-converter.exe', 'the_converter_shell.dll')
     foreach ($file in @(Get-ChildItem -LiteralPath $stage -Recurse -Force)) {
         if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point in Store layout: $($file.FullName)" }
         if ($file.PSIsContainer) { continue }

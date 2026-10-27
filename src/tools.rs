@@ -48,7 +48,7 @@ impl ToolPaths {
             }
             if let Some(parent) = path.parent() {
                 let executable = parent.join(executable_name(companion));
-                if executable.is_file() {
+                if executable_available(&executable) {
                     self.set(companion, executable);
                 }
             }
@@ -56,12 +56,13 @@ impl ToolPaths {
     }
 
     fn set(&mut self, key: &str, path: PathBuf) {
+        let path = executable_available(&path).then_some(path);
         match key {
-            "ffmpeg" => self.ffmpeg = Some(path),
-            "ffprobe" => self.ffprobe = Some(path),
-            "pdftoppm" => self.pdftoppm = Some(path),
-            "pdftotext" => self.pdftotext = Some(path),
-            "soffice" => self.soffice = Some(path),
+            "ffmpeg" => self.ffmpeg = path,
+            "ffprobe" => self.ffprobe = path,
+            "pdftoppm" => self.pdftoppm = path,
+            "pdftotext" => self.pdftotext = path,
+            "soffice" => self.soffice = path,
             _ => {}
         }
     }
@@ -91,7 +92,17 @@ impl ToolPaths {
 }
 
 fn tool_exists(path: &Option<PathBuf>) -> bool {
-    path.as_ref().is_some_and(|path| path.is_file())
+    path.as_ref().is_some_and(|path| executable_available(path))
+}
+
+/// Windows batch files require a command processor; conversion tools must be
+/// existing EXEs instead. Custom filenames and case-insensitive EXE suffixes work.
+pub fn executable_available(path: &Path) -> bool {
+    path.is_file()
+        && (!cfg!(windows)
+            || path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")))
 }
 
 fn find_tool(name: &str) -> Option<PathBuf> {
@@ -114,14 +125,16 @@ fn find_tool(name: &str) -> Option<PathBuf> {
     }
     // Explorer and MSIX activations have different working directories. Only use
     // absolute PATH entries, never an engine found beside an arbitrary input file.
-    if let Ok(path) = which::which_global(&exe) {
+    if let Ok(path) = which::which_global(&exe)
+        && executable_available(&path)
+    {
         return Some(path);
     }
     if name == "soffice" {
         for env in ["ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(root) = std::env::var_os(env) {
                 let path = PathBuf::from(root).join("LibreOffice/program").join(&exe);
-                if path.is_file() {
+                if executable_available(&path) {
                     return Some(path);
                 }
             }
@@ -131,7 +144,7 @@ fn find_tool(name: &str) -> Option<PathBuf> {
                 .data_local_dir()
                 .join("Programs/LibreOffice/program")
                 .join(&exe);
-            if path.is_file() {
+            if executable_available(&path) {
                 return Some(path);
             }
         }
@@ -203,7 +216,7 @@ fn find_in_roots(executable: &str, roots: &[PathBuf]) -> Option<PathBuf> {
             "LibreOffice/program",
         ] {
             let path = root.join(suffix).join(executable);
-            if path.is_file() {
+            if executable_available(&path) {
                 return Some(path);
             }
         }
@@ -290,8 +303,47 @@ mod tests {
         assert_eq!(tools.ffmpeg, Some(ffmpeg));
         assert_eq!(tools.ffprobe, Some(ffprobe));
         let manual = root.path().join("manual-ffprobe.exe");
+        std::fs::write(&manual, []).unwrap();
         overrides.insert("ffprobe".into(), manual.clone());
         tools.apply_overrides(&overrides);
         assert_eq!(tools.ffprobe, Some(manual));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tools_accept_custom_exes_but_never_batch_or_script_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let custom = directory.path().join("FFmpeg custom build.EXE");
+        std::fs::write(&custom, []).unwrap();
+        assert!(executable_available(&custom));
+        assert!(!executable_available(&directory.path().join("missing.exe")));
+        let folder = directory.path().join("folder.exe");
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(!executable_available(&folder));
+        for extension in ["cmd", "bat", "ps1", "com"] {
+            let path = directory.path().join(format!("not-a-tool.{extension}"));
+            std::fs::write(&path, b"This fixture is never executed").unwrap();
+            assert!(!executable_available(&path));
+            let mut tools = ToolPaths::default();
+            tools.apply_overrides(&BTreeMap::from([
+                ("ffmpeg".into(), path.clone()),
+                ("ffprobe".into(), path),
+            ]));
+            assert!(tools.ffmpeg.is_none());
+            assert!(tools.ffprobe.is_none());
+            assert!(
+                tools
+                    .missing_for(MediaKind::Audio, OutputFormat::Mp3)
+                    .is_some()
+            );
+        }
+        let mut tools = ToolPaths::default();
+        tools.apply_overrides(&BTreeMap::from([("ffmpeg".into(), custom.clone())]));
+        assert_eq!(tools.ffmpeg, Some(custom));
+        assert!(
+            tools
+                .missing_for(MediaKind::Audio, OutputFormat::Mp3)
+                .is_none()
+        );
     }
 }

@@ -1,6 +1,6 @@
 # Full MSIX for Microsoft Store
 
-This packaging path targets **Windows 11 x64, build 22000 or later**, and contains the application, CLI, Explorer COM DLL, execution-alias metadata, app logos and third-party notices. It uses `packagedClassicApp`, a visible app-list entry and `runFullTrust`. It does not use sparse identity or external application content. FFmpeg, Poppler, LibreOffice and the PowerShell runtime downloader are excluded.
+This packaging path targets **Windows 11 x64, build 22000 or later**, and contains one graphical application, the Explorer COM DLL, execution-alias metadata, app logos and third-party notices. It uses `packagedClassicApp`, a visible app-list entry and `runFullTrust`. It does not use sparse identity or external application content. The console CLI, FFmpeg, Poppler, LibreOffice and the PowerShell runtime downloader are excluded; terminal commands remain available in the separate portable/GitHub distribution.
 
 The publisher brand is **Corsivo**; the developer is **Salvatore Corsi**. A Corsivo Partner Center account and reserved product do not yet exist. Production identity values must be copied from that account after registration; the development publisher subject must not be substituted for those values.
 
@@ -31,7 +31,7 @@ Microsoft signs accepted Store submissions, so this build intentionally produces
 
 - Windows x64, Rust MSVC, Visual Studio C++ Build Tools and Windows SDK MakeAppx are required. `-CargoPath` and `-MakeAppxPath` accept explicit executable paths.
 - The Cargo cache defaults to `target/store-msix`; it does not overwrite standalone/sparse binaries. `-BuildDirectory` changes this cache.
-- The PE application manifest is supplied through `THE_CONVERTER_APP_MANIFEST`. It requests `asInvoker` and omits the sparse `msix` element: the full MSIX grants runtime package identity. Both executable resources are checked after compilation.
+- The PE application manifest is supplied through `THE_CONVERTER_APP_MANIFEST`. It requests `asInvoker` and omits the sparse `msix` element: the full MSIX grants runtime package identity. The GUI executable resource is checked after compilation.
 - `+crt-static` avoids an undeclared Visual C++ runtime requirement. Data-only PE inspection checks x64 and rejects dynamic MSVCP/VCRUNTIME/MSVCR imports.
 - Logos retain unqualified base files and provide StoreLogo scales 100/125/150/200/400, Square44/Square150 scales 100/200/400 and light/dark unplated target sizes 16/24/32/48/256. Their actual pixel dimensions are validated.
 - Existing dependency notices must cover the locked Windows Cargo graph. If missing, first run `release-support/collect-rust-licenses.ps1`.
@@ -39,7 +39,9 @@ Microsoft signs accepted Store submissions, so this build intentionally produces
 
 Each run returns the package path and produces `submission-report.json`, `SUBMISSION-REPORT.md`, `SHA256SUMS.txt`, tool logs and the exact package layout. The report records identity, both versions, source commit/dirty state, imported libraries, payload hashes and checks that were not performed. No account upload occurs.
 
-The GUI execution alias is `corsivo-the-converter-preview.exe` for preview and `corsivo-the-converter.exe` for submission. The console CLI has its own alias, `corsivo-the-converter-preview-cli.exe` or `corsivo-the-converter-cli.exe`, targeting `the-converter-cli.exe` through a second, hidden application entry. MakeAppx permits only one app-execution-alias extension per application, so the CLI entry uses `AppListEntry="none"`; only the GUI appears in Start. Both applications declare multiple-instance support so quick conversions, queue workers and status windows can run alongside an existing GUI without activation being redirected to it. `store-runtime.json` next to the executable contains only the GUI `execution_alias`; the application uses this stable alias for queue placeholders across Store updates. Use the console alias for commands such as `--diagnose` instead of launching the protected WindowsApps binary directly.
+The GUI execution alias is `corsivo-the-converter-preview.exe` for preview and `corsivo-the-converter.exe` for submission. The application declares multiple-instance support so quick conversions, queue workers and status windows can run alongside an existing GUI without activation being redirected to it. `store-runtime.json` next to the executable contains only the matching `execution_alias`; the application uses this stable alias for queue placeholders across Store updates.
+
+A preliminary two-application package passed MakeAppx validation but WACK 1.0.1 reported a failed optional Store application-count test: the Store does not support more than one declared application. That warning was not treated as a clean certification result. This layout therefore declares exactly one GUI application and has no CLI binary or console alias. MakeAppx also rejects multiple app-execution-alias extensions inside one application, and the alias schema has no per-alias executable override, so no unsupported workaround is used. Final WACK testing remains separate from package generation.
 
 The package declares only the implemented Italian UI language (`it-it`). An English Store listing is independent of application localization.
 

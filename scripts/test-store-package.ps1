@@ -36,7 +36,7 @@ try {
     $preview = Get-StorePackageIdentity
     Assert ($preview.Name -ceq 'Corsivo.TheConverter.StorePreview' -and $preview.DisplayName -ceq 'The Converter Store Preview' -and $preview.PublisherDisplayName -ceq 'Corsivo') 'Preview identity is not clearly separate.'
     Assert ($preview.Version -eq '1.0.0.0' -and $preview.ExecutionAlias -eq 'corsivo-the-converter-preview.exe') 'Incorrect preview version or alias.'
-    Assert ($preview.CliExecutionAlias -eq 'corsivo-the-converter-preview-cli.exe') 'Incorrect preview CLI alias.'
+    Assert (-not $preview.PSObject.Properties['CliExecutionAlias']) 'Preview identity advertises an unsupported Store CLI alias.'
     Assert-Fails { Get-StorePackageIdentity -ForSubmission -IdentityConfig (Join-Path $definitions 'identity.partner-center.example.json') } 'Submission accepted placeholder identity.'
     Assert-Fails { Get-StorePackageIdentity -ForSubmission -IdentityConfig (Join-Path $fixture 'missing.json') } 'Submission accepted absent account identity.'
     Assert-Fails { Get-StorePackageIdentity -IdentityConfig (Join-Path $definitions 'identity.partner-center.example.json') } 'Preview silently used submission identity.'
@@ -49,14 +49,14 @@ try {
     Write-Json $configPath $config
     $submission = Get-StorePackageIdentity -ForSubmission -IdentityConfig $configPath
     Assert ($submission.Name -eq $config.Name -and $submission.ExecutionAlias -eq 'corsivo-the-converter.exe' -and $submission.Mode -eq 'submission') 'Explicit submission identity was not preserved.'
-    Assert ($submission.CliExecutionAlias -eq 'corsivo-the-converter-cli.exe') 'Incorrect production CLI alias.'
+    Assert (-not $submission.PSObject.Properties['CliExecutionAlias']) 'Submission identity advertises an unsupported Store CLI alias.'
     $neverOutput = Join-Path $fixture 'must-not-be-created'
     Assert-Fails { & (Join-Path $PSScriptRoot 'build-store-package.ps1') -ForSubmission -IdentityConfig (Join-Path $definitions 'identity.partner-center.example.json') -OutputDirectory $neverOutput } 'Builder accepted placeholder submission config.'
     Assert (-not (Test-Path -LiteralPath $neverOutput)) 'Placeholder submission created output before failing.'
 
     $layout = Join-Path $fixture 'layout'
     New-Item -ItemType Directory -Path (Join-Path $layout 'Docs\licenses') -Force | Out-Null
-    foreach ($binary in @('the-converter.exe', 'the-converter-cli.exe', 'the_converter_shell.dll')) { New-PeFixture (Join-Path $layout $binary) }
+    foreach ($binary in @('the-converter.exe', 'the_converter_shell.dll')) { New-PeFixture (Join-Path $layout $binary) }
     foreach ($name in @('README.txt', 'THIRD-PARTY-NOTICES.md', 'Docs\licenses\RUST-THIRD-PARTY-LICENSES.txt')) { [IO.File]::WriteAllText((Join-Path $layout $name), 'Fixture text') }
     Write-Json (Join-Path $layout 'Docs\licenses\rust-components.json') @(@{ name = 'fixture'; version = '1'; notice_count = 1 })
     Write-Json (Join-Path $layout 'store-runtime.json') @{ execution_alias = $preview.ExecutionAlias }
@@ -98,20 +98,17 @@ try {
     Change-Manifest { param($doc) $resource = $doc.CreateElement('Resource', 'http://schemas.microsoft.com/appx/manifest/foundation/windows10'); $resource.SetAttribute('Language', 'en-us'); [void]$doc.Package.Resources.AppendChild($resource) }
     Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'Unimplemented UI language advertised.'
     Reset-Manifest
-    Change-Manifest { param($doc) $alias = $doc.SelectSingleNode('//*[local-name()="Extension" and @Executable="the-converter-cli.exe"]'); [void]$alias.ParentNode.RemoveChild($alias) }
-    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'Missing console alias accepted.'
+    Change-Manifest { param($doc) $alias = $doc.SelectSingleNode('//*[local-name()="Extension" and @Executable="the-converter.exe"]'); [void]$alias.ParentNode.RemoveChild($alias) }
+    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'Missing GUI alias accepted.'
     Reset-Manifest
-    Change-Manifest { param($doc) $doc.SelectSingleNode('//*[local-name()="Extension" and @Executable="the-converter-cli.exe"]').SetAttribute('Executable', 'the-converter.exe') }
-    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'CLI alias targeting GUI executable accepted.'
+    Change-Manifest { param($doc) $doc.SelectSingleNode('//*[local-name()="Extension" and @Executable="the-converter.exe"]').SetAttribute('Executable', 'the-converter-cli.exe') }
+    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'GUI alias targeting excluded CLI accepted.'
     Reset-Manifest
-    Change-Manifest { param($doc) $container = $doc.SelectSingleNode('//*[local-name()="Extension" and @Executable="the-converter-cli.exe"]/*[local-name()="AppExecutionAlias"]'); [void]$container.SetAttribute('Subsystem', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10', 'windows') }
-    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'CLI alias with windows subsystem accepted.'
+    Change-Manifest { param($doc) $container = $doc.SelectSingleNode('//*[local-name()="Extension" and @Executable="the-converter.exe"]/*[local-name()="AppExecutionAlias"]'); [void]$container.SetAttribute('Subsystem', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10', 'console') }
+    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'GUI alias with console subsystem accepted.'
     Reset-Manifest
-    Change-Manifest { param($doc) $doc.SelectSingleNode('//*[local-name()="Application" and @Id="TheConverterCli"]/*[local-name()="VisualElements"]').SetAttribute('AppListEntry', 'default') }
-    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'CLI exposed a duplicate Start menu entry.'
-    Reset-Manifest
-    Change-Manifest { param($doc) [void]$doc.SelectSingleNode('//*[local-name()="Application" and @Id="TheConverterCli"]').SetAttribute('SupportsMultipleInstances', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10', 'false') }
-    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'Console activation without multiple-instance support accepted.'
+    Change-Manifest { param($doc) $additional = $doc.SelectSingleNode('//*[local-name()="Application" and @Id="TheConverter"]').CloneNode($true); $additional.SetAttribute('Id', 'TheConverterCli'); $additional.SetAttribute('Executable', 'the-converter-cli.exe'); [void]$doc.Package.Applications.AppendChild($additional) }
+    Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'Multiple application entries rejected by Store certification were accepted.'
     Reset-Manifest
     Change-Manifest { param($doc) [void]$doc.SelectSingleNode('//*[local-name()="Application" and @Id="TheConverter"]').SetAttribute('SupportsMultipleInstances', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10', 'false') }
     Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'GUI alias could redirect worker/quick activation to an existing GUI instance.'
@@ -127,7 +124,7 @@ try {
     Write-Json (Join-Path $layout 'store-runtime.json') @{ execution_alias = $preview.ExecutionAlias; extra = $true }
     Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } 'Undeclared runtime metadata accepted.'
     Write-Json (Join-Path $layout 'store-runtime.json') @{ execution_alias = $preview.ExecutionAlias }
-    foreach ($name in @('ffmpeg.exe', 'install-runtime-tools.ps1', 'certificate.cer')) {
+    foreach ($name in @('the-converter-cli.exe', 'ffmpeg.exe', 'install-runtime-tools.ps1', 'certificate.cer')) {
         $unexpected = Join-Path $layout $name
         [IO.File]::WriteAllText($unexpected, 'Fixture')
         Assert-Fails { Assert-StorePackageLayout -StageDirectory $layout -Identity $preview } "Unexpected executable/script/certificate accepted: $name"

@@ -4,7 +4,10 @@ fn main() {
         resource.set("ProductName", "The Converter");
         resource.set("FileDescription", "The Converter — conversioni locali");
         resource.set("CompanyName", "Salvatore Corsi");
-        resource.set_manifest_file("shell-extension/app.manifest");
+        let manifest = std::env::var("THE_CONVERTER_APP_MANIFEST")
+            .unwrap_or_else(|_| "shell-extension/app.manifest".into());
+        resource.set_manifest_file(&manifest);
+        println!("cargo:rerun-if-changed={manifest}");
         if std::path::Path::new("assets/app.ico").exists() {
             resource.set_icon("assets/app.ico");
         }
@@ -16,4 +19,5 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=assets/pending.ico");
     println!("cargo:rerun-if-changed=assets/failed.ico");
+    println!("cargo:rerun-if-env-changed=THE_CONVERTER_APP_MANIFEST");
 }

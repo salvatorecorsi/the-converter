@@ -87,7 +87,7 @@ cargo build --release --locked --manifest-path .\shell-extension\Cargo.toml
 .\scripts\build-release.ps1 -SkipBuild
 ```
 
-`fetch-tools.ps1` scarica versioni fissate di FFmpeg e Poppler e ne verifica gli SHA-256 prima di copiarle; non installa nulla nel sistema. È opzionale se usi strumenti già disponibili. `scripts\build-release.ps1` esegue entrambe le compilazioni. `-CertificateThumbprint` permette di firmare l'MSIX con un certificato già disponibile. MakeAppx è necessario per generare il pacchetto identità; l'applicazione può essere usata anche senza.
+`fetch-tools.ps1` scarica versioni fissate di FFmpeg e Poppler e ne verifica gli SHA-256 prima di copiarle; non installa nulla nel sistema. È opzionale se usi strumenti già disponibili. `scripts\build-release.ps1` esegue entrambe le compilazioni. `-CertificateThumbprint` permette di firmare eseguibili, DLL e MSIX con un certificato già disponibile, ricavandone il Publisher per entrambi i manifest. MakeAppx è necessario per generare il pacchetto identità; l'applicazione può essere usata anche senza.
 
 Per preparare gli artefatti pubblici, dopo la build:
 
@@ -97,6 +97,8 @@ Per preparare gli artefatti pubblici, dopo la build:
 ```
 
 Lo staging pubblico usa una lista esplicita di file e una verifica che rifiuta motori esterni o DLL aggiuntive. L'output in `dist/releases/v<versione>/` contiene setup, archivio portable e `SHA256SUMS.txt`. Gli avvisi delle dipendenze Rust e dei font sono inclusi in entrambi gli artefatti.
+
+Per una distribuzione con il menu moderno, usa `prepare-public-release.ps1 -RequireModernMenu` dopo una build firmata con un certificato di produzione. Il comando include MSIX e loghi esterni, oppure si interrompe se manca una firma attendibile. Il relativo setup abilita per default la voce diretta su Windows 11 e la rimuove durante la disinstallazione. Non importa certificati di prova: la procedura locale e i requisiti di firma sono descritti in [docs/windows-integration.md](docs/windows-integration.md).
 
 ## Riga di comando
 

@@ -6,6 +6,7 @@ param(
     [string]$Version
 )
 $ErrorActionPreference = 'Stop'
+$env:PSModulePath = (Join-Path $PSHOME 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $SourceDirectory) { $SourceDirectory = Join-Path $root 'dist\TheConverter' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $root 'dist\release' }
@@ -45,7 +46,16 @@ $compiler = (Resolve-Path -LiteralPath $CompilerPath).Path
 $modern = 0
 $package = Join-Path $source 'TheConverter.Identity.msix'
 if (Test-Path -LiteralPath $package -PathType Leaf) {
-    if ((Get-AuthenticodeSignature -LiteralPath $package).Status -eq 'Valid') { $modern = 1 }
+    Import-Module (Join-Path $PSScriptRoot 'modern-menu-package.psm1') -Force
+    # Reject broken assets or mismatched identity even when the package is unsigned.
+    $packageInfo = Get-ModernMenuPackageInfo -PackagePath $package -InstallDirectory $source
+    if ($packageInfo.Version -ne [version]$fileVersion) { throw 'La versione MSIX non corrisponde alla versione dell installer.' }
+    try {
+        $null = Get-ModernMenuPackageInfo -PackagePath $package -InstallDirectory $source -RequireTrustedSignature
+        $modern = 1
+    } catch {
+        Write-Warning ('Menu Windows 11 escluso dal setup: ' + $_.Exception.Message)
+    }
 }
 # The installer deliberately includes no FFmpeg/Poppler binaries from tools/.
 # Those are downloaded directly from upstream by the selected installation task.

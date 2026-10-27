@@ -59,9 +59,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
 italian.AdditionalIntegration=Integrazione con Windows:
-italian.ContextMenu=Aggiungi "Converti in" al menu del tasto destro (su Windows 11: Mostra altre opzioni)
+italian.ContextMenu=Aggiungi il menu classico come compatibilita e ripiego (Windows 11: Mostra altre opzioni)
 italian.DownloadTools=Scarica FFmpeg e Poppler per audio, video e PDF (consigliato; circa 160 MB, richiede Internet)
-italian.ModernContextMenu=Attiva anche il menu moderno di Windows 11 (pacchetto firmato)
+italian.ModernContextMenu=Aggiungi "Converti in" direttamente al menu di Windows 11
 italian.DesktopShortcut=Crea un collegamento sul desktop
 italian.LaunchApp=Apri The Converter
 italian.UninstallApp=Disinstalla The Converter
@@ -69,11 +69,12 @@ italian.InstallTools=Installa o aggiorna motori di conversione
 italian.DownloadingTools=Download e verifica dei motori di conversione...
 italian.ToolsFailed=The Converter è installato, ma non è stato possibile scaricare FFmpeg e Poppler.%n%nLe conversioni di immagini restano disponibili. Per riprovare in seguito, apri "Installa o aggiorna motori di conversione" dalla cartella The Converter nel menu Start.%n%nVuoi riprovare il download adesso?
 italian.ModernFailed=Non è stato possibile registrare il menu moderno di Windows 11. Il pacchetto deve avere una firma attendibile su questo computer. Il menu classico resta disponibile se selezionato.%n%nConsulta docs\windows-integration.md per i dettagli.
+italian.ModernRemovalFailed=Non è stato possibile rimuovere il menu di Windows 11. La registrazione e i file applicazione sono conservati: riprova dopo aver chiuso le conversioni in corso. Consulta il registro del setup per i dettagli.
 italian.PendingCleanup=Il menu è stato rimosso. Windows sta ancora usando la DLL dell'estensione: la pulizia verrà ritentata al prossimo accesso, senza riavviare Esplora file.
 english.AdditionalIntegration=Windows integration:
-english.ContextMenu=Add "Convert to" to the right-click menu (Windows 11: Show more options)
+english.ContextMenu=Add the classic menu for compatibility and fallback (Windows 11: Show more options)
 english.DownloadTools=Download FFmpeg and Poppler for audio, video and PDF (recommended; about 160 MB, requires Internet)
-english.ModernContextMenu=Enable the modern Windows 11 menu as well (signed package)
+english.ModernContextMenu=Add "Convert to" directly to the Windows 11 menu
 english.DesktopShortcut=Create a desktop shortcut
 english.LaunchApp=Open The Converter
 english.UninstallApp=Uninstall The Converter
@@ -81,13 +82,14 @@ english.InstallTools=Install or update conversion engines
 english.DownloadingTools=Downloading and verifying conversion engines...
 english.ToolsFailed=The Converter is installed, but FFmpeg and Poppler could not be downloaded.%n%nImage conversions remain available. To retry later, open "Install or update conversion engines" in the The Converter Start menu folder.%n%nRetry the download now?
 english.ModernFailed=The modern Windows 11 menu could not be registered. The package must have a trusted signature on this computer. The classic menu remains available if selected.%n%nSee docs\windows-integration.md for details.
+english.ModernRemovalFailed=The Windows 11 menu could not be removed. Its registration and application files have been preserved: retry after closing any running conversions. See the setup log for details.
 english.PendingCleanup=The menu has been removed. Windows is still using the extension DLL: cleanup will be retried at your next sign-in without restarting File Explorer.
 
 [Tasks]
 Name: "contextmenu"; Description: "{cm:ContextMenu}"; GroupDescription: "{cm:AdditionalIntegration}"
 Name: "downloadtools"; Description: "{cm:DownloadTools}"; GroupDescription: "{cm:AdditionalIntegration}"
 #if ModernMenuAvailable == "1"
-Name: "moderncontextmenu"; Description: "{cm:ModernContextMenu}"; GroupDescription: "{cm:AdditionalIntegration}"; Flags: unchecked; Check: IsWindows11
+Name: "moderncontextmenu"; Description: "{cm:ModernContextMenu}"; GroupDescription: "{cm:AdditionalIntegration}"; Check: IsWindows11
 #endif
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:AdditionalIntegration}"; Flags: unchecked
 
@@ -100,9 +102,11 @@ Source: "{#SourceDir}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreve
 Source: "{#SourceDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\scripts\install-context-menu.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "{#SourceDir}\scripts\uninstall-context-menu.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "{#SourceDir}\scripts\modern-menu-package.psm1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\scripts\install-runtime-tools.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 #if ModernMenuAvailable == "1"
 Source: "{#SourceDir}\TheConverter.Identity.msix"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\Assets\*"; DestDir: "{app}\Assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 [Icons]
@@ -236,7 +240,7 @@ begin
     { Inno 7's plain Exec does not redirect a 32-bit setup to native System32.
       This helper explicitly starts x64 PowerShell and captures stdout/stderr. }
     Started := ExecAndLogOutputWithNativeSysDir(ProgramPath, Parameters,
-      ExpandConstant('{app}'), SW_SHOWNORMAL, ewWaitUntilTerminated, ExitCode, nil);
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ExitCode, nil);
   except
     Log('RunScript capture/launch exception: ' + GetExceptionMessage);
   end;
@@ -290,10 +294,21 @@ begin
       ModernInstalled := RunScript('install-context-menu.ps1', '-Mode Modern -InstallDirectory ' + Quoted(ExpandConstant('{app}')));
       if not ModernInstalled then
         SuppressibleMsgBox(CustomMessage('ModernFailed'), mbError, MB_OK, IDOK);
+    end
+    else if IsWindows11 then
+    begin
+      if RunScript('uninstall-context-menu.ps1', '-Mode Modern -InstallDirectory ' + Quoted(ExpandConstant('{app}'))) then
+        SetIniString('Integration', 'ModernMenuInstalled', '0', ExpandConstant('{app}\installer-state.ini'))
+      else
+        SuppressibleMsgBox(CustomMessage('ModernRemovalFailed'), mbError, MB_OK, IDOK);
     end;
 #endif
     if ModernInstalled then
+    begin
       SetIniString('Integration', 'ModernMenuInstalled', '1', ExpandConstant('{app}\installer-state.ini'));
+      { Successful migration removes our old classic command to avoid duplicates. }
+      UnregisterClassic;
+    end;
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
   end;
 end;
@@ -304,9 +319,13 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { Appx must be removed while its manifest, scripts and external files exist.
+      Failure stops uninstallation before the file-removal phase. }
+    if IsWindows11 then
+      if not RunScript('uninstall-context-menu.ps1', '-Mode Modern -InstallDirectory ' + Quoted(ExpandConstant('{app}'))) then
+        RaiseException(CustomMessage('ModernRemovalFailed'));
+    SetIniString('Integration', 'ModernMenuInstalled', '0', ExpandConstant('{app}\installer-state.ini'));
     UnregisterClassic;
-    if GetIniString('Integration', 'ModernMenuInstalled', '0', ExpandConstant('{app}\installer-state.ini')) = '1' then
-      RunScript('uninstall-context-menu.ps1', '-Mode Modern');
   end;
   if CurUninstallStep = usPostUninstall then
   begin

@@ -6,6 +6,21 @@ param(
     [string]$PackagePath
 )
 $ErrorActionPreference = 'Stop'
+$env:PSModulePath = (Join-Path $PSHOME 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath
+if ($Mode -eq 'Modern' -and $PSVersionTable.PSEdition -eq 'Core') {
+    # Appx is a Windows PowerShell module; avoid PowerShell 7 compatibility remoting.
+    $systemDirectory = if ([Environment]::Is64BitProcess) { 'System32' } else { 'Sysnative' }
+    $windowsPowerShell = Join-Path $env:WINDIR "$systemDirectory\WindowsPowerShell\v1.0\powershell.exe"
+    $forward = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Mode', $Mode)
+    if ($InstallDirectory) { $forward += @('-InstallDirectory', $InstallDirectory) }
+    if ($PackagePath) { $forward += @('-PackagePath', $PackagePath) }
+    if ($WhatIfPreference) { $forward += '-WhatIf' }
+    # powershell.exe 5.1 -File cannot bind explicit Boolean switch arguments.
+    if ($PSBoundParameters.ContainsKey('Confirm') -and [bool]$PSBoundParameters['Confirm']) { $forward += '-Confirm' }
+    & $windowsPowerShell @forward
+    if ($LASTEXITCODE -ne 0) { throw "Registrazione menu Windows 11 fallita (PowerShell: $LASTEXITCODE)." }
+    return
+}
 if (-not $InstallDirectory) {
     $adjacentApp = Join-Path $PSScriptRoot '..\the-converter.exe'
     if (Test-Path -LiteralPath $adjacentApp -PathType Leaf) { $InstallDirectory = Join-Path $PSScriptRoot '..' }
@@ -24,12 +39,55 @@ if ($Mode -eq 'Modern') {
     if ([Environment]::OSVersion.Version.Build -lt 22000) { throw 'Il menu moderno richiede Windows 11.' }
     if (-not $PackagePath) { $PackagePath = Join-Path $installPath 'TheConverter.Identity.msix' }
     $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
-    $signature = Get-AuthenticodeSignature -LiteralPath $resolvedPackage
-    if ($signature.Status -ne 'Valid') {
-        throw "Il pacchetto MSIX deve avere una firma valida e attendibile (stato: $($signature.Status)). Non viene modificato l'archivio certificati. Vedi docs/windows-integration.md."
+    Import-Module (Join-Path $PSScriptRoot 'modern-menu-package.psm1') -Force
+    $info = Get-ModernMenuPackageInfo -PackagePath $resolvedPackage -InstallDirectory $installPath -RequireTrustedSignature
+    $savedWhatIf = $WhatIfPreference
+    try { $WhatIfPreference = $false; Import-Module Appx -ErrorAction Stop } finally { $WhatIfPreference = $savedWhatIf }
+    $allRegistered = @(Get-AppxPackage -Name $info.Name | Where-Object { $_.Name -ceq $info.Name })
+    foreach ($otherIdentity in @($allRegistered | Where-Object { $_.Publisher -ine $info.Publisher })) {
+        $otherPath = Get-ModernMenuExternalPath -Package $otherIdentity
+        if (-not $otherPath -or [string]::Equals([IO.Path]::GetFullPath($otherPath).TrimEnd('\'), $installPath.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Una precedente identita usa un Publisher diverso. Rimuovi prima il menu con uninstall-context-menu.ps1 -Mode Modern -InstallDirectory e il percorso di questa installazione.'
+        }
+    }
+    $registered = @($allRegistered | Where-Object { $_.Publisher -ieq $info.Publisher })
+    if ($registered.Count -gt 1) { throw 'Sono presenti piu identita The Converter per questo utente; registrazione interrotta.' }
+    $existing = $registered | Select-Object -First 1
+    $existingPath = $null
+    if ($existing) {
+        if ([version]$existing.Version -gt $info.Version) { throw 'E gia registrata una versione piu recente del menu Windows 11.' }
+        $existingPath = Get-ModernMenuExternalPath -Package $existing
+        if ([version]$existing.Version -eq $info.Version -and $existingPath -and
+            [string]::Equals([IO.Path]::GetFullPath($existingPath).TrimEnd('\'), $installPath.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host 'Il menu Windows 11 e gia registrato per questa installazione.'
+            return
+        }
     }
     if ($PSCmdlet.ShouldProcess($resolvedPackage, 'Registra identita MSIX e menu Windows 11 per questo utente')) {
-        Add-AppxPackage -Path $resolvedPackage -ExternalLocation $installPath
+        try {
+            Add-AppxPackage -Path $resolvedPackage -ExternalLocation $installPath -ErrorAction Stop
+        } catch {
+            $registrationError = $_
+            $errorText = [string]$_.Exception + ' ' + [string]$_.ErrorDetails + ' ' + [string]$_
+            # Never remove a working registration on trust, schema or unrelated errors.
+            # Only an exact-version conflict with a verified different location is repairable.
+            $conflict = $errorText -match '(?i)\b0x80073CF[9B]\b'
+            $stillRegistered = @(Get-AppxPackage -Name $info.Name | Where-Object {
+                $_.Name -ceq $info.Name -and $_.Publisher -ieq $info.Publisher -and [version]$_.Version -eq $info.Version
+            })
+            $conflictPath = $null
+            if ($stillRegistered.Count -eq 1) { $conflictPath = Get-ModernMenuExternalPath -Package $stillRegistered[0] }
+            if (-not $conflict -or -not $existing -or [version]$existing.Version -ne $info.Version -or
+                -not $existingPath -or -not $conflictPath -or
+                -not [string]::Equals([IO.Path]::GetFullPath($existingPath), [IO.Path]::GetFullPath($conflictPath), [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals([IO.Path]::GetFullPath($conflictPath).TrimEnd('\'), $installPath.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+                throw $registrationError
+            }
+            if ($PSCmdlet.ShouldProcess($stillRegistered[0].PackageFullName, "Aggiorna il percorso esterno da $conflictPath a $installPath")) {
+                Remove-AppxPackage -Package $stillRegistered[0].PackageFullName -ErrorAction Stop
+                Add-AppxPackage -Path $resolvedPackage -ExternalLocation $installPath -ErrorAction Stop
+            } else { return }
+        }
         Write-Host 'Menu Windows 11 registrato. Se non appare, riavvia Esplora file o accedi nuovamente a Windows.'
     }
     return

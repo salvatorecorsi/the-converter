@@ -27,20 +27,36 @@ Su Windows 10 il comando compare nel menu contestuale. Su Windows 11 questo meto
 
 Il menu moderno richiede **package identity**, oltre a `IExplorerCommand`. La sola scrittura nel registro non e sufficiente. Il progetto include il manifest di un pacchetto MSIX con contenuto esterno, COM surrogate e `windows.fileExplorerContextMenus`.
 
-`build-release.ps1` prepara `TheConverter.Identity.msix` senza installarlo. Per la distribuzione il pacchetto deve essere firmato con un certificato attendibile sul computer destinatario. Il Subject del certificato deve corrispondere a `CN=Salvatore Corsi`, definito sia nel manifest MSIX sia nell'application manifest incorporato nell'eseguibile. E possibile firmare durante la preparazione:
+`build-release.ps1` prepara `TheConverter.Identity.msix` senza installarlo. Per la distribuzione il pacchetto deve essere firmato con un certificato attendibile sul computer destinatario. Lo script ricava il Publisher dal Subject del certificato selezionato in `Cert:\CurrentUser\My`, lo applica sia al manifest MSIX sia al manifest incorporato negli eseguibili e ricompila l'app. La versione del pacchetto deriva da `Cargo.toml`. E possibile firmare durante la preparazione:
 
 ```powershell
 .\scripts\build-release.ps1 -CertificateThumbprint 'IMPRONTA_DEL_CERTIFICATO'
 .\scripts\install-context-menu.ps1 -Mode Modern -InstallDirectory .\dist\TheConverter
 ```
 
-Lo script verifica la firma e chiama `Add-AppxPackage -ExternalLocation` per l'utente corrente. **Non crea certificati, non importa certificati attendibili e non riavvia Esplora file.** Per sviluppo locale si puo usare un certificato di test, gestendone manualmente firma e trust come indicato dalla documentazione Microsoft. Dopo una nuova registrazione puo essere necessario riavviare Esplora file o uscire e rientrare in Windows.
+Non usare `-SkipBuild` per cambiare Publisher: gli eseguibili devono incorporare la stessa identita del pacchetto. Anche quando si riusano binari compilati, lo script controlla il manifest effettivamente incorporato prima di produrre la distribuzione.
+
+La firma usa SHA-256 e un timestamp RFC 3161 per conservare la validita dopo la scadenza del certificato. Il server predefinito e `http://timestamp.digicert.com`; `-TimestampServer` consente di scegliere quello del proprio servizio di firma. Un errore di firma o timestamp interrompe la preparazione.
+
+Lo script di installazione verifica firma, Publisher, versione, COM server e presenza dei loghi nella cartella esterna, poi chiama `Add-AppxPackage -ExternalLocation` per l'utente corrente. Una registrazione identica e gia presente viene conservata. **Non crea certificati, non importa certificati attendibili e non riavvia Esplora file.** Dopo una nuova registrazione puo essere necessario uscire e rientrare in Windows.
+
+Il setup include MSIX e cartella `Assets` solo quando la firma del pacchetto e attendibile sulla macchina di compilazione. In questo caso, su Windows 11 l'opzione per il menu moderno e selezionata per default. Dopo una registrazione riuscita rimuove la precedente voce classica gestita dall'app. Il disinstaller rimuove prima l'identita associata alla propria cartella; se Windows rifiuta la rimozione, interrompe la disinstallazione conservando i file.
+
+Per produrre una release pubblica con il menu moderno, usa una firma di produzione riconosciuta dai computer destinatari e richiedi esplicitamente il pacchetto firmato:
 
 ```powershell
-.\scripts\uninstall-context-menu.ps1 -Mode Modern
+.\scripts\prepare-public-release.ps1 -RequireModernMenu
 ```
 
-Questo rimuove il pacchetto identita dell'utente corrente, lasciando applicazione e preferenze. Puoi installare entrambi i menu, ma Windows 11 potrebbe mostrare il comando anche nel menu classico.
+Questo comando si interrompe prima di creare gli artefatti se manca una firma attendibile; non produce in sua vece un setup con il solo menu classico. Include il pacchetto identita e tutti i loghi referenziati anche nell'archivio portable. Un certificato autofirmato e rifiutato per la release pubblica.
+
+Per una prova sul proprio PC e possibile usare un certificato di sviluppo. La guida Microsoft per i pacchetti con contenuto esterno prevede l'importazione del solo certificato pubblico `.cer` nell'archivio **Utente corrente → Persone attendibili** (`Cert:\CurrentUser\TrustedPeople`). E una modifica alla fiducia dell'utente, da eseguire consapevolmente e separatamente dall'installer; la chiave privata `.pfx` resta riservata. Un certificato di test non e una firma di produzione e va rimosso quando non serve piu. Non sono necessari Developer Mode o modifiche globali al menu di Windows.
+
+```powershell
+.\scripts\uninstall-context-menu.ps1 -Mode Modern -InstallDirectory .\dist\TheConverter
+```
+
+Questo rimuove il pacchetto identita dell'utente corrente soltanto se appartiene alla cartella indicata, lasciando applicazione e preferenze. Non rimuove certificati. Puoi registrare separatamente anche il menu classico, se desideri averlo in entrambi i menu.
 
 ## Selezioni multiple e sicurezza del processo
 
@@ -55,9 +71,12 @@ Compilazione e test COM sono eseguibili senza registrare la DLL:
 ```powershell
 cargo test --manifest-path .\shell-extension\Cargo.toml
 .\scripts\test-shell-extension.ps1
+.\scripts\test-modern-menu-package.ps1
 ```
 
 Lo smoke test carica la DLL reale senza registrarla, attiva gli oggetti COM e passa veri `IShellItemArray` creati da Windows: verifica il sottomenu e i formati comuni a batch audio/video, immagini/PDF e documenti/immagini, allocazione stringhe e rilascio degli oggetti. La modalita opzionale `-InvokeCaptureFile` e riservata a un helper di test isolato che registra gli argomenti del processo lanciato; verifica separatamente la conversione rapida e l'apertura delle impostazioni.
+
+I test del pacchetto moderno usano fixture e comandi Appx simulati in un processo Windows PowerShell separato: coprono manifest e asset non validi, firma incoerente, `WhatIf`, registrazione ripetuta, cambio cartella e Publisher, rimozione della sola installazione indicata e propagazione degli errori. Non modificano certificati, registro o pacchetti reali.
 
 La presenza effettiva nel menu moderno va verificata dopo aver firmato e registrato il pacchetto su una macchina Windows 11. Il repository fornisce l'implementazione e la procedura di distribuzione; un MSIX non firmato non e una installazione completata. Nessuna registrazione viene eseguita automaticamente all'avvio dell'app o durante la compilazione.
 
@@ -65,4 +84,5 @@ La presenza effettiva nel menu moderno va verificata dopo aver firmato e registr
 
 - [Comandi di Esplora file con IExplorerCommand e manifest MSIX](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)
 - [Package identity con contenuto esterno: compilazione, firma e registrazione](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps)
+- [Firma di sviluppo e trust per pacchetti con contenuto esterno](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps#build-and-sign-the-identity-package)
 - [Requisiti e comportamento del menu di Windows 11](https://blogs.windows.com/blog/2021/07/19/extending-the-context-menu-and-share-dialog-in-windows-11/)

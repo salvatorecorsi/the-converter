@@ -1,6 +1,22 @@
 # The Converter
 
-Versione Rust per Windows del progetto [Final Converter](https://github.com/salvatorecorsi/final-converter) di Salvatore Corsi. Conversioni locali, selezioni multiple e integrazione con Esplora file. Nessun server e nessun upload.
+Progetto **Corsivo**, sviluppato da **Salvatore Corsi**: versione Rust per Windows di [Final Converter](https://github.com/salvatorecorsi/final-converter). Conversioni locali, selezioni multiple e integrazione con Esplora file. Nessun server e nessun upload.
+
+## Preparazione Microsoft Store
+
+La distribuzione Store usa un **MSIX completo** con il menu di Windows 11 dichiarato nel pacchetto. Editore pubblico: **Corsivo**; autore del codice: Salvatore Corsi. L'account GitHub che ospita il sorgente resta indipendente dall'identita dell'editore Microsoft.
+
+La build di anteprima e separata dalla release GitHub e non contiene certificati privati o motori esterni. Immagini e immagini in PDF funzionano subito; audio/video richiedono FFmpeg, esportazione PDF richiede Poppler e documenti Office richiedono LibreOffice, selezionabili in **Strumenti**. Questi requisiti sono dichiarati anche all'inizio delle schede Store.
+
+```powershell
+.\scripts\build-store-package.ps1
+```
+
+La preview usa un'identita di sviluppo e **non va caricata nello Store**. Per il pacchetto definitivo occorrono i dati esatti dell'Identita prodotto in Partner Center, la versione Store e l'editore assegnato all'account di Corsivo. Il modello e in `packaging/store/identity.partner-center.example.json`; la procedura e in [docs/store-submission.md](docs/store-submission.md).
+
+Sono preparate le [schede italiana](docs/store-listing-it.md) e [inglese](docs/store-listing-en.md), con interfaccia attualmente in italiano, e una [bozza dell'informativa privacy](docs/privacy.md). I campi del titolare, i contatti e gli URL mancanti vanno completati prima dell'invio. Microsoft firma il MSIX dopo la certificazione: la build Store non importa certificati e non invia automaticamente l'app a Partner Center.
+
+Su GitHub Actions, **Windows checks** verifica codice e fixture su push e pull request. **Microsoft Store package** si avvia manualmente: senza dati Partner Center produce una preview; con `for_submission` e l'identita reale produce il candidato unsigned da caricare. Il pacchetto e il materiale per la scheda si scaricano dagli artefatti del workflow. Le credenziali Microsoft e il certificato locale non sono richiesti dalla pipeline.
 
 ## Scarica e installa
 

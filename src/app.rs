@@ -132,10 +132,7 @@ fn load_saved() -> SavedState {
 
 pub fn quick_configuration() -> (ConversionSettings, ToolPaths) {
     let saved = load_saved();
-    let mut tools = ToolPaths::discover();
-    for (name, path) in saved.overrides {
-        set_tool(&mut tools, &name, Some(path));
-    }
+    let tools = ToolPaths::configured(&saved.overrides);
     (saved.settings, tools)
 }
 
@@ -205,10 +202,7 @@ impl ConverterApp {
         if let Some(format) = target {
             saved.settings.format = format;
         }
-        let mut tools = ToolPaths::discover();
-        for (name, path) in &saved.overrides {
-            set_tool(&mut tools, name, Some(path.clone()));
-        }
+        let tools = ToolPaths::configured(&saved.overrides);
         let mut app = Self {
             saved,
             tools,
@@ -233,9 +227,14 @@ impl ConverterApp {
             && let Some(parent) = path.parent()
         {
             let result = std::fs::create_dir_all(parent).and_then(|_| {
+                use std::io::Write;
                 let bytes =
                     serde_json::to_vec_pretty(&self.saved).map_err(std::io::Error::other)?;
-                std::fs::write(path, bytes)
+                let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+                temporary.write_all(&bytes)?;
+                temporary.flush()?;
+                temporary.persist(&path).map_err(|error| error.error)?;
+                Ok(())
             });
             if let Err(err) = result {
                 self.notice = Some(format!("Impossibile salvare le preferenze: {err}"));
@@ -1221,46 +1220,75 @@ impl ConverterApp {
 
     fn tools_window(&mut self, ctx: &egui::Context) {
         let mut opened = self.show_tools;
-        egui::Window::new("Strumenti di conversione").open(&mut opened).default_width(580.0).resizable(true).collapsible(false).show(ctx, |ui| {
-            ui.label("Le immagini si convertono direttamente. Per audio, video e documenti scegli gli strumenti installati sul tuo PC.");
-            ui.add_space(5.0);
-            for (key, label, description) in [
-                ("ffmpeg", "FFmpeg", "Conversioni audio e video"),
-                ("ffprobe", "FFprobe", "Durata dei media e avanzamento preciso"),
-                ("pdftoppm", "Poppler · pdftoppm", "PDF in immagini"),
-                ("pdftotext", "Poppler · pdftotext", "PDF in testo"),
-                ("soffice", "LibreOffice · soffice", "Documenti Office in PDF"),
-            ] {
-                egui::Frame::new().fill(subtle_fill(ui)).corner_radius(7).inner_margin(10).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(label).strong());
-                        let path = get_tool(&self.tools, key);
-                        let valid = path.as_ref().is_some_and(|p| p.is_file());
-                        ui.label(RichText::new(if valid { "Disponibile" } else { "Da configurare" }).small().color(if valid { GREEN } else { ui.visuals().weak_text_color() }));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Sfoglia…").clicked()
-                                && let Some(path) = rfd::FileDialog::new().add_filter("Programmi Windows", &["exe"]).pick_file() {
-                                    set_tool(&mut self.tools, key, Some(path.clone()));
+        egui::Window::new("Strumenti di conversione")
+            .open(&mut opened)
+            .default_width(610.0)
+            .resizable(true)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Immagini e PDF da immagini, subito disponibili.").strong());
+                ui.label("Audio, video, pagine PDF e documenti Office usano strumenti opzionali. Se sono già installati, The Converter li rileva o ti permette di selezionarli.");
+                ui.label(RichText::new("I file vengono elaborati sul PC. I siti ufficiali si aprono nel browser; l’app non scarica né installa questi strumenti.").small().weak());
+                ui.add_space(5.0);
+                egui::ScrollArea::vertical().id_salt("tools_scroll").max_height(470.0).show(ui, |ui| {
+                    for (key, label, description, website) in [
+                        ("ffmpeg", "FFmpeg", "Necessario per audio, video e GIF da video.", "https://ffmpeg.org/download.html"),
+                        ("ffprobe", "FFprobe", "Opzionale: durata dei media e avanzamento più preciso. Di solito è accanto a ffmpeg.exe.", "https://ffmpeg.org/ffprobe.html"),
+                        ("pdftoppm", "Poppler · immagini", "Necessario per esportare ogni pagina PDF in PNG o JPEG. Seleziona pdftoppm.exe.", "https://poppler.freedesktop.org/"),
+                        ("pdftotext", "Poppler · testo", "Necessario per estrarre testo dai PDF. Seleziona pdftotext.exe. Il riconoscimento OCR non è incluso.", "https://poppler.freedesktop.org/"),
+                        ("soffice", "LibreOffice", "Necessario per i documenti Office in PDF. Seleziona soffice.exe nella cartella program di LibreOffice.", "https://www.libreoffice.org/download/download-libreoffice/"),
+                    ] {
+                        egui::Frame::new().fill(subtle_fill(ui)).corner_radius(7).inner_margin(11).show(ui, |ui| {
+                            let path = get_tool(&self.tools, key);
+                            let valid = path.as_ref().is_some_and(|path| path.is_file());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(label).strong());
+                                ui.label(RichText::new(if valid { "Disponibile" } else { "Non configurato" }).small().color(if valid { GREEN } else { ui.visuals().weak_text_color() }));
+                            });
+                            ui.add(egui::Label::new(RichText::new(description).small().weak()).wrap());
+                            if let Some(path) = path {
+                                ui.add(egui::Label::new(RichText::new(display_path(&path)).small()).wrap());
+                                if !valid {
+                                    ui.colored_label(ui.visuals().error_fg_color, "Il percorso salvato non è più disponibile. Seleziona di nuovo lo strumento.");
+                                }
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.small_button("Seleziona programma…").clicked()
+                                    && let Some(path) = rfd::FileDialog::new()
+                                        .set_title(format!("Seleziona {key}.exe già installato"))
+                                        .set_file_name(format!("{key}.exe"))
+                                        .add_filter("Programmi Windows", &["exe"])
+                                        .pick_file()
+                                {
                                     self.saved.overrides.insert(key.into(), path);
+                                    self.tools = ToolPaths::configured(&self.saved.overrides);
                                     self.settings_dirty = true;
                                 }
+                                if self.saved.overrides.contains_key(key)
+                                    && ui.small_button("Usa rilevamento automatico").clicked()
+                                {
+                                    self.saved.overrides.remove(key);
+                                    self.tools = ToolPaths::configured(&self.saved.overrides);
+                                    self.settings_dirty = true;
+                                }
+                                ui.hyperlink_to("Sito ufficiale ↗", website);
+                            });
                         });
+                    }
+                    egui::CollapsingHeader::new("Cartella personale degli strumenti").show(ui, |ui| {
+                        ui.label(RichText::new("Puoi usare gli strumenti già presenti in questa cartella personale. Non occorre modificare la cartella di installazione dell’app.").small().weak());
+                        if let Some(path) = the_converter::tools::user_tools_dir() {
+                            ui.add(egui::Label::new(RichText::new(display_path(&path)).small()).wrap());
+                            if ui.small_button("Copia percorso").clicked() { ui.ctx().copy_text(display_path(&path)); }
+                        }
+                        ui.label(RichText::new("Sono riconosciute anche le cartelle bin, ffmpeg/bin e poppler/Library/bin. Le DLL necessarie devono restare insieme ai rispettivi programmi.").small().weak());
                     });
-                    ui.label(RichText::new(description).small().weak());
-                    if let Some(path) = get_tool(&self.tools, key) { ui.add(egui::Label::new(RichText::new(path.display().to_string()).small()).wrap()); }
                 });
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Rileva di nuovo").clicked() {
-                    self.tools = ToolPaths::discover();
-                    self.saved.overrides.clear();
-                    self.settings_dirty = true;
+                ui.separator();
+                if ui.button("Rileva strumenti installati").clicked() {
+                    self.tools = ToolPaths::configured(&self.saved.overrides);
                 }
-                ui.hyperlink_to("Download FFmpeg", "https://ffmpeg.org/download.html");
-                ui.hyperlink_to("LibreOffice", "https://www.libreoffice.org/download/download-libreoffice/");
             });
-            ui.label(RichText::new("Puoi anche collocare gli eseguibili nella cartella tools accanto a The Converter.").small().weak());
-        });
         self.show_tools = opened;
     }
 }
@@ -1860,16 +1888,5 @@ fn get_tool(tools: &ToolPaths, key: &str) -> Option<PathBuf> {
         "pdftotext" => tools.pdftotext.clone(),
         "soffice" => tools.soffice.clone(),
         _ => None,
-    }
-}
-
-fn set_tool(tools: &mut ToolPaths, key: &str, path: Option<PathBuf>) {
-    match key {
-        "ffmpeg" => tools.ffmpeg = path,
-        "ffprobe" => tools.ffprobe = path,
-        "pdftoppm" => tools.pdftoppm = path,
-        "pdftotext" => tools.pdftotext = path,
-        "soffice" => tools.soffice = path,
-        _ => {}
     }
 }

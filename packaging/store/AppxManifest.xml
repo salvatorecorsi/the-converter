@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+ xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+ xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+ xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+ xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+ xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+ xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+ xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+ xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+ IgnorableNamespaces="uap uap10 uap5 com desktop4 desktop5 rescap">
+ <Identity Name="Corsivo.TheConverter.StorePreview" Publisher="CN=Salvatore Corsi" Version="1.0.0.0" ProcessorArchitecture="x64"/>
+ <Properties>
+  <DisplayName>The Converter Store Preview</DisplayName>
+  <PublisherDisplayName>Corsivo</PublisherDisplayName>
+  <Description>Local audio, video, image and document conversion</Description>
+  <Logo>Assets\StoreLogo.png</Logo>
+ </Properties>
+ <Resources><Resource Language="it-it"/></Resources>
+ <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
+ <Applications>
+  <Application Id="TheConverter" Executable="the-converter.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="packagedClassicApp" uap10:SupportsMultipleInstances="true">
+   <uap:VisualElements AppListEntry="default" DisplayName="The Converter Store Preview" Description="Local audio, video, image and document conversion" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png"/>
+   <Extensions>
+    <uap5:Extension Category="windows.appExecutionAlias" Executable="the-converter.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+     <uap5:AppExecutionAlias uap10:Subsystem="windows"><uap5:ExecutionAlias Alias="corsivo-the-converter-preview.exe"/></uap5:AppExecutionAlias>
+    </uap5:Extension>
+    <com:Extension Category="windows.comServer">
+     <com:ComServer><com:SurrogateServer DisplayName="The Converter Explorer Command">
+      <com:Class Id="67B51BA1-8A78-4B4B-A5F9-08A825BE91F8" Path="the_converter_shell.dll" ThreadingModel="STA"/>
+     </com:SurrogateServer></com:ComServer>
+    </com:Extension>
+    <desktop4:Extension Category="windows.fileExplorerContextMenus">
+     <desktop4:FileExplorerContextMenus><desktop5:ItemType Type="*">
+      <desktop5:Verb Id="ConvertWithTheConverter" Clsid="67B51BA1-8A78-4B4B-A5F9-08A825BE91F8"/>
+     </desktop5:ItemType></desktop4:FileExplorerContextMenus>
+    </desktop4:Extension>
+   </Extensions>
+  </Application>
+  <Application Id="TheConverterCli" Executable="the-converter-cli.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="packagedClassicApp" uap10:Subsystem="console" uap10:SupportsMultipleInstances="true">
+   <uap:VisualElements AppListEntry="none" DisplayName="The Converter Store Preview CLI" Description="Command-line interface for local conversions" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png"/>
+   <Extensions>
+    <uap5:Extension Category="windows.appExecutionAlias" Executable="the-converter-cli.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+     <uap5:AppExecutionAlias uap10:Subsystem="console"><uap5:ExecutionAlias Alias="corsivo-the-converter-preview-cli.exe"/></uap5:AppExecutionAlias>
+    </uap5:Extension>
+   </Extensions>
+  </Application>
+ </Applications>
+ <Capabilities><rescap:Capability Name="runFullTrust"/></Capabilities>
+</Package>

@@ -209,6 +209,119 @@ fn concurrent_prepare_and_release_preserve_live_ownership_and_cleanup_when_idle(
     assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
 }
 
+#[cfg(windows)]
+#[test]
+fn persistent_namespace_acl_denial_returns_an_error_without_hanging() {
+    use std::{
+        ffi::c_void,
+        os::windows::ffi::OsStrExt,
+        time::{Duration, Instant},
+    };
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn GetFileSecurityW(
+            path: *const u16,
+            information: u32,
+            descriptor: *mut c_void,
+            length: u32,
+            needed: *mut u32,
+        ) -> i32;
+        fn SetFileSecurityW(path: *const u16, information: u32, descriptor: *const c_void) -> i32;
+        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            text: *const u16,
+            revision: u32,
+            descriptor: *mut *mut c_void,
+            length: *mut u32,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    }
+    struct RestoreDacl {
+        path: Vec<u16>,
+        descriptor: Vec<u8>,
+    }
+    impl Drop for RestoreDacl {
+        fn drop(&mut self) {
+            // Always restore this fixture's original DACL, including after an assertion panic.
+            unsafe {
+                SetFileSecurityW(self.path.as_ptr(), 4, self.descriptor.as_ptr().cast());
+            }
+        }
+    }
+
+    let folder = tempfile::tempdir().unwrap();
+    let input = folder.path().join("source.png");
+    fixture(&input);
+    let namespace = folder.path().join(".the-converter-reservations");
+    fs::create_dir(&namespace).unwrap();
+    let unrelated = namespace.join("keep.txt");
+    fs::write(&unrelated, b"unrelated fixture").unwrap();
+    let path: Vec<u16> = namespace.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut needed = 0;
+    unsafe {
+        GetFileSecurityW(path.as_ptr(), 4, std::ptr::null_mut(), 0, &mut needed);
+    }
+    assert!(needed > 0 && needed < 65_536);
+    let mut descriptor = vec![0u8; needed as usize];
+    assert_ne!(
+        unsafe {
+            GetFileSecurityW(
+                path.as_ptr(),
+                4,
+                descriptor.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            )
+        },
+        0
+    );
+    let restore = RestoreDacl { path, descriptor };
+    // Deny only FILE_ADD_FILE on this temporary namespace. Other access (including DACL
+    // restoration) stays available; no inherited or user-profile permissions are changed.
+    let sddl: Vec<u16> = "D:P(D;;0x00000002;;;WD)(A;;FA;;;WD)"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut denied = std::ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut denied,
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    let applied = unsafe { SetFileSecurityW(restore.path.as_ptr(), 4, denied) };
+    unsafe {
+        LocalFree(denied);
+    }
+    assert_ne!(applied, 0);
+
+    let start = Instant::now();
+    let result = engine::prepare(&input, &settings(OutputFormat::Jpg), &ToolPaths::default());
+    let elapsed = start.elapsed();
+    drop(restore);
+    let error = result.unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(5)
+    );
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "ACL failure took {elapsed:?}"
+    );
+    assert_eq!(fs::read(unrelated).unwrap(), b"unrelated fixture");
+    assert!(!folder.path().join("source.jpg").exists());
+}
+
 #[test]
 fn prepared_conversion_publishes_exact_name_and_preserves_owned_markers_until_release() {
     let folder = tempfile::tempdir().unwrap();

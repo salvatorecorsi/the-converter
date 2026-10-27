@@ -3,7 +3,7 @@ fn main() {
         let mut resource = winresource::WindowsResource::new();
         resource.set("ProductName", "The Converter");
         resource.set("FileDescription", "The Converter — conversioni locali");
-        resource.set("CompanyName", "Salvatore Corsi");
+        resource.set("CompanyName", "Corsivo");
         let manifest = std::env::var("THE_CONVERTER_APP_MANIFEST")
             .unwrap_or_else(|_| "shell-extension/app.manifest".into());
         resource.set_manifest_file(&manifest);

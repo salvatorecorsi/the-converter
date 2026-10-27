@@ -1,0 +1,58 @@
+name: Windows checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Prepare Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Formatting
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path shell-extension/Cargo.toml -- --check
+      - name: Rust tests
+        shell: pwsh
+        run: |
+          cargo test --locked --all-targets
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path shell-extension/Cargo.toml
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $scripts = Get-ChildItem scripts,release-support,packaging -Recurse -File |
+            Where-Object { $_.Extension -in '.ps1','.psm1' }
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count) { throw "$($script.FullName): $($parseErrors -join '; ')" }
+          }
+      - name: Explorer registration fixtures
+        shell: pwsh
+        run: ./scripts/test-modern-menu-package.ps1
+      - name: Store packaging fixtures
+        shell: pwsh
+        run: ./scripts/test-store-package.ps1
+

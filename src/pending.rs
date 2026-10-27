@@ -15,7 +15,11 @@ use std::{
 pub struct PendingLink {
     output: PathBuf,
     path: PathBuf,
+    /// Stable app execution alias for MSIX, or the concrete EXE for portable builds.
     executable: PathBuf,
+    /// Real PE binary used for icons. Older records used `executable` for both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon_executable: Option<PathBuf>,
     job_id: String,
 }
 
@@ -33,10 +37,12 @@ impl PendingLink {
             .parent()
             .context("Destinazione della conversione non valida")?;
         fs::create_dir_all(parent)?;
+        let target = crate::package::preview_target(executable);
         let pending = Self {
             output: output.to_owned(),
             path: Self::path_for(output),
-            executable: executable.to_owned(),
+            icon_executable: (!same_path(&target, executable)).then(|| executable.to_owned()),
+            executable: target,
             job_id: job_id.to_owned(),
         };
         let temporary = tempfile::Builder::new()
@@ -45,6 +51,7 @@ impl PendingLink {
             .tempfile_in(parent)?;
         native::save_link(
             temporary.path(),
+            &pending.executable,
             executable,
             job_id,
             status,
@@ -97,9 +104,13 @@ impl PendingLink {
             .prefix(".the-converter-preview-")
             .suffix(".lnk")
             .tempfile_in(parent)?;
+        let icon_executable = crate::package::packaged_executable()
+            .or_else(|| self.icon_executable.clone())
+            .unwrap_or_else(|| self.executable.clone());
         native::save_link(
             temporary.path(),
             &self.executable,
+            &icon_executable,
             &self.job_id,
             status,
             &self.output,
@@ -184,6 +195,7 @@ mod native {
     pub const DELETE: i32 = 0x0000_0004;
     pub const UPDATE: i32 = 0x0000_2000;
     const RPC_E_CHANGED_MODE: i32 = 0x80010106u32 as i32;
+    const SLGP_RAWPATH: u32 = 0x0000_0004;
 
     #[repr(C)]
     struct Guid {
@@ -347,6 +359,7 @@ mod native {
     pub fn save_link(
         path: &Path,
         executable: &Path,
+        icon_executable: &Path,
         job_id: &str,
         status: &str,
         output: &Path,
@@ -356,6 +369,7 @@ mod native {
         let link = link_object()?;
         let vtable = link.vtable::<ShellLink>();
         let target = wide_path(executable)?;
+        let icon = wide_path(icon_executable)?;
         let args = wide(&format!("--queue-job {job_id}"))?;
         // Current Explorer truncates persisted link descriptions at MAX_PATH.
         // Keep below that boundary, preserve complete Unicode characters, and
@@ -391,14 +405,14 @@ mod native {
                 "Stato collegamento",
             )?;
             check(
-                (vtable.set_icon)(link.0, target.as_ptr(), if failed { -3 } else { -2 }),
+                (vtable.set_icon)(link.0, icon.as_ptr(), if failed { -3 } else { -2 }),
                 "Icona collegamento",
             )?;
             check(
                 (vtable.set_show_command)(link.0, 1),
                 "Finestra collegamento",
             )?;
-            if let Some(parent) = executable.parent() {
+            if let Some(parent) = icon_executable.parent() {
                 let directory = wide_path(parent)?;
                 check(
                     (vtable.set_working_directory)(link.0, directory.as_ptr()),
@@ -443,7 +457,9 @@ mod native {
                     target.as_mut_ptr(),
                     target.len() as i32,
                     ptr::null_mut(),
-                    4,
+                    // Preserve an app execution alias as stored. Resolving it here
+                    // would turn a stable preview back into a versioned package path.
+                    SLGP_RAWPATH,
                 )
             },
             "Lettura destinazione anteprima",
@@ -510,7 +526,15 @@ mod native {
         pub executable: PathBuf,
         pub arguments: String,
     }
-    pub fn save_link(_: &Path, _: &Path, _: &str, _: &str, _: &Path, _: bool) -> Result<()> {
+    pub fn save_link(
+        _: &Path,
+        _: &Path,
+        _: &Path,
+        _: &str,
+        _: &str,
+        _: &Path,
+        _: bool,
+    ) -> Result<()> {
         bail!("Le anteprime di Esplora file richiedono Windows")
     }
     pub fn read_link(_: &Path) -> Result<Details> {
@@ -718,6 +742,7 @@ mod tests {
         native::save_link(
             pending.path(),
             &exe,
+            &exe,
             "different-job",
             "Altro lavoro",
             &output,
@@ -728,5 +753,85 @@ mod tests {
         assert!(pending.update("50%").is_err());
         assert!(pending.remove().is_err());
         assert_eq!(fs::read(pending.path()).unwrap(), changed);
+    }
+
+    #[test]
+    fn legacy_queue_records_without_a_separate_icon_binary_still_update_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let output = dir.path().join("legacy-output.mp3");
+        let created = PendingLink::create(&output, &exe, "job-legacy", "In coda").unwrap();
+        let legacy = serde_json::json!({
+            "output": output,
+            "path": created.path(),
+            "executable": exe,
+            "job_id": "job-legacy",
+        });
+        let pending: PendingLink = serde_json::from_value(legacy).unwrap();
+        assert!(pending.icon_executable.is_none());
+        pending.update("Conversione: 25%").unwrap();
+        let read = native::read_link(pending.path()).unwrap();
+        assert!(same_path(&read.executable, &exe));
+        assert_eq!(read.arguments, "--queue-job job-legacy");
+        pending.remove().unwrap();
+        assert!(!pending.path().exists());
+    }
+
+    #[test]
+    fn stable_alias_raw_target_and_ownership_survive_a_change_of_icon_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("utente città & mare");
+        let alias = user.join("Microsoft/WindowsApps/corsivo-the-converter-preview.exe");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        // A local fixture exercises ShellLink's raw-path storage without changing
+        // a real Windows alias, package registration or per-user settings.
+        fs::write(&alias, []).unwrap();
+        let alias = alias.canonicalize().unwrap();
+        let old_icon = dir.path().join("package-v1.exe");
+        let new_icon = dir.path().join("package-v2.exe");
+        fs::copy(std::env::current_exe().unwrap(), &old_icon).unwrap();
+        fs::copy(std::env::current_exe().unwrap(), &new_icon).unwrap();
+        let output = user.join("video città & mare.mp4");
+        let pending = PendingLink {
+            output: output.clone(),
+            path: PendingLink::path_for(&output),
+            executable: alias.clone(),
+            icon_executable: Some(old_icon.clone()),
+            job_id: "job-stable-alias".into(),
+        };
+        native::save_link(
+            pending.path(),
+            &alias,
+            &old_icon,
+            &pending.job_id,
+            "In coda",
+            &output,
+            false,
+        )
+        .unwrap();
+        let stored = serde_json::to_vec(&pending).unwrap();
+        let restored: PendingLink = serde_json::from_slice(&stored).unwrap();
+        restored.check_ownership().unwrap();
+        let read = native::read_link(restored.path()).unwrap();
+        assert!(same_path(&read.executable, &alias));
+        assert_eq!(read.arguments, "--queue-job job-stable-alias");
+        assert!(same_path(&read.icon, &old_icon));
+        native::save_link(
+            restored.path(),
+            &alias,
+            &new_icon,
+            &restored.job_id,
+            "Nuova versione",
+            &output,
+            true,
+        )
+        .unwrap();
+        restored.check_ownership().unwrap();
+        let updated = native::read_link(restored.path()).unwrap();
+        assert!(same_path(&updated.executable, &alias));
+        assert!(same_path(&updated.icon, &new_icon));
+        assert_eq!(updated.icon_index, -3);
+        restored.remove().unwrap();
+        assert!(!restored.path().exists());
     }
 }

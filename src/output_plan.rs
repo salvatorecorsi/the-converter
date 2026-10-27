@@ -18,6 +18,7 @@ use std::{
 
 const MAX_OUTPUTS: usize = 10_000;
 const RESERVATION_DIRECTORY: &str = ".the-converter-reservations";
+const NAMESPACE_RETRY_LIMIT: u32 = 32;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Durable queue data. Call `release_prepared` after completion, failure or abandonment.
@@ -104,7 +105,29 @@ fn marker_path(output: &Path) -> Result<PathBuf> {
         .join(format!("{name}.json")))
 }
 
-fn ensure_reservation_directory(output_dir: &Path) -> Result<()> {
+#[derive(Default)]
+struct NamespaceRetry {
+    attempts: u32,
+}
+
+impl NamespaceRetry {
+    fn pause(&mut self, error: &std::io::Error) -> bool {
+        // Windows can report access/sharing violations while an empty directory is
+        // delete-pending. Bound the shared budget so a real ACL denial is still an error.
+        let retryable = error.kind() == std::io::ErrorKind::NotFound
+            || cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33 | 303));
+        if !retryable || self.attempts >= NAMESPACE_RETRY_LIMIT {
+            return false;
+        }
+        self.attempts += 1;
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(
+            self.attempts.min(10),
+        )));
+        true
+    }
+}
+
+fn ensure_reservation_directory(output_dir: &Path, retry: &mut NamespaceRetry) -> Result<()> {
     let directory = output_dir.join(RESERVATION_DIRECTORY);
     loop {
         let result = (|| -> Result<()> {
@@ -122,7 +145,7 @@ fn ensure_reservation_directory(output_dir: &Path) -> Result<()> {
         if result.as_ref().is_err_and(|error| {
             error
                 .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                .is_some_and(|error| retry.pause(error))
         }) {
             continue;
         }
@@ -131,13 +154,26 @@ fn ensure_reservation_directory(output_dir: &Path) -> Result<()> {
 }
 
 fn create_marker(output_dir: &Path, marker: &Path) -> Result<Option<File>> {
+    let mut retry = NamespaceRetry::default();
     loop {
-        ensure_reservation_directory(output_dir)?;
+        ensure_reservation_directory(output_dir, &mut retry)?;
         match OpenOptions::new().write(true).create_new(true).open(marker) {
             Ok(file) => return Ok(Some(file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error).context("Impossibile prenotare il nome del risultato"),
+            Err(error) => {
+                // CREATE_NEW can report access denied for an existing hidden/read-only
+                // marker on Windows. It is another reservation, never ours to replace.
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+                    && fs::symlink_metadata(marker).is_ok()
+                {
+                    return Ok(None);
+                }
+                if retry.pause(&error) {
+                    continue;
+                }
+                return Err(error).context("Impossibile prenotare il nome del risultato");
+            }
         }
     }
 }

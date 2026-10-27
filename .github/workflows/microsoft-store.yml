@@ -1,0 +1,95 @@
+name: Microsoft Store package
+
+on:
+  workflow_dispatch:
+    inputs:
+      for_submission:
+        description: Build with the real Corsivo Partner Center identity
+        type: boolean
+        default: false
+      identity_name:
+        description: Exact Package/Identity/Name from Partner Center (submission only)
+        type: string
+      identity_publisher:
+        description: Exact Package/Identity/Publisher from Partner Center (submission only)
+        type: string
+      publisher_display_name:
+        description: Exact PublisherDisplayName assigned to Corsivo (submission only)
+        type: string
+        default: Corsivo
+      display_name:
+        description: Reserved product display name
+        type: string
+        default: The Converter
+      store_version:
+        description: Store version; major must be positive and fourth component zero
+        type: string
+        default: 1.0.0.0
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      STORE_FOR_SUBMISSION: ${{ inputs.for_submission }}
+      STORE_IDENTITY_NAME: ${{ inputs.identity_name }}
+      STORE_IDENTITY_PUBLISHER: ${{ inputs.identity_publisher }}
+      STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+      STORE_DISPLAY_NAME: ${{ inputs.display_name }}
+      STORE_VERSION: ${{ inputs.store_version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Prepare Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build unsigned MSIX
+        shell: pwsh
+        run: |
+          if ($env:STORE_FOR_SUBMISSION -eq 'true') {
+            $config = @{
+              Name = $env:STORE_IDENTITY_NAME
+              Publisher = $env:STORE_IDENTITY_PUBLISHER
+              PublisherDisplayName = $env:STORE_PUBLISHER_DISPLAY_NAME
+              DisplayName = $env:STORE_DISPLAY_NAME
+              Version = $env:STORE_VERSION
+            }
+            $configPath = Join-Path $env:RUNNER_TEMP 'corsivo-partner-center.json'
+            $config | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding utf8
+            ./scripts/build-store-package.ps1 -IdentityConfig $configPath -ForSubmission
+          } else {
+            ./scripts/build-store-package.ps1 -PreviewVersion $env:STORE_VERSION
+          }
+      - name: Keep package and submission material
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: corsivo-the-converter-store-${{ inputs.for_submission && 'candidate' || 'preview' }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            dist/store/**/*.msix
+            dist/store/**/SHA256SUMS.txt
+            dist/store/**/submission-report.json
+            dist/store/**/SUBMISSION-REPORT.md
+            docs/store-submission.md
+            docs/store-listing-it.md
+            docs/store-listing-en.md
+            docs/privacy.md
+            docs/store-assets/**
+      - name: Explain signing and identity
+        shell: pwsh
+        run: |
+          @'
+          ## Corsivo — The Converter
+          The MSIX is unsigned. Microsoft signs a Store submission after certification.
+          Preview packages use a development identity and must not be submitted.
+          Candidate packages still require a completed Store listing, public privacy policy,
+          screenshots and review in the Corsivo Partner Center account.
+          This workflow never imports certificates, installs the app or submits to the Store.
+          '@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

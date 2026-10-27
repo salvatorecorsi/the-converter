@@ -4,11 +4,11 @@ Bozza per il MSIX completo, da verificare sul pacchetto finale. Editore: **CORSI
 
 ## Descrizione breve
 
-Converti immagini e crea PDF dal tasto destro di Windows 11. Coda locale e opzioni di qualita. Audio, video e altre conversioni PDF richiedono motori esterni opzionali.
+Conversioni di file dal tasto destro di Windows 11, con coda e opzioni. Trascrizione audio TXT online facoltativa con OpenAI e propria API key. Motori esterni per audio/video e alcune funzioni PDF.
 
 ## Descrizione
 
-Immagini e immagini in PDF funzionano subito. Per audio e video occorre FFmpeg; per esportare pagine o testo da PDF occorre Poppler; per convertire documenti Office in PDF occorre LibreOffice. Questi programmi opzionali non sono inclusi: puoi selezionare gli eseguibili gia presenti sul PC nella finestra Strumenti.
+Immagini e immagini in PDF funzionano subito. Le conversioni di formato audio/video richiedono FFmpeg; l'esportazione PDF richiede Poppler; i documenti Office in PDF richiedono LibreOffice. Questi motori opzionali non sono inclusi. La trascrizione audio TXT con OpenAI e facoltativa: richiede internet, una propria chiave API e fatturazione API separata da ChatGPT; invia l'audio a OpenAI. FFmpeg prepara gli audio che non possono essere inviati direttamente.
 
 The Converter porta le conversioni nella cartella in cui lavori. Dal menu contestuale di Windows 11 scegli Converti in e il formato desiderato: il lavoro entra in coda con le impostazioni salvate, senza aprire ogni volta la finestra delle opzioni.
 
@@ -20,7 +20,9 @@ Con FFmpeg puoi convertire audio in MP3, WAV, FLAC, AAC, OGG, Opus e AIFF, conve
 
 Con Poppler puoi esportare i PDF in immagini PNG/JPEG o estrarne il testo incorporato. Con LibreOffice puoi convertire documenti, fogli e presentazioni compatibili in PDF.
 
-Le conversioni vengono elaborate sul PC e l'app non carica i tuoi file su un server. Non serve creare un account nell'app. Preferenze, percorsi dei file, stato della coda e dettagli degli errori vengono salvati localmente.
+Le conversioni di formato vengono elaborate sul PC. Solo scegliendo la trascrizione audio TXT con OpenAI, dopo averla abilitata, invii l'audio al servizio online usando la tua chiave API. La chiave e protetta dal Gestore credenziali Windows e puo essere rimossa dalle impostazioni. Non serve un account nell'app per le conversioni locali. Preferenze, percorsi dei file, stato della coda e dettagli degli errori vengono salvati localmente, senza includere la chiave.
+
+La trascrizione del parlato crea un file TXT e permette il riconoscimento automatico della lingua o la scelta di una lingua. Non e disponibile direttamente per i video. Rileggi sempre il testo ottenuto: possono esserci errori. I costi delle richieste gia inviate possono maturare anche se il lavoro viene annullato.
 
 Limiti: non sono inclusi OCR, unione o modifica dei PDF. Da GIF animate e TIFF multipagina viene convertito il primo fotogramma o la prima pagina. Ogni immagine genera un PDF separato. L'impaginazione dei documenti Office dipende da LibreOffice e dai font disponibili. L'interfaccia e attualmente in italiano. Il menu moderno richiede Windows 11 x64.
 
@@ -38,7 +40,8 @@ Qualita JPEG, ridimensionamento e cartella di destinazione personalizzabili
 Audio e video con FFmpeg opzionale selezionato dall'utente
 Esportazione PDF con Poppler e documenti in PDF con LibreOffice opzionali
 File originali conservati e nomi numerati in caso di conflitto
-Elaborazione sul PC, senza account nell'app o upload dei file
+Conversioni di formato locali; audio inviato a OpenAI solo per la trascrizione richiesta
+Trascrizione audio TXT opzionale con propria API key OpenAI e costi API separati
 ```
 
 ## Termini di ricerca
@@ -60,6 +63,7 @@ coda conversioni
 ```text
 Windows 11 x64 per il menu contestuale moderno
 FFmpeg per audio e video; Poppler per esportare PDF; LibreOffice per documenti in PDF. Motori opzionali non inclusi.
+Trascrizione audio TXT facoltativa: internet, chiave e account OpenAI API con costi separati da ChatGPT; FFmpeg se occorre preparare l'audio.
 ```
 
 ## Novita

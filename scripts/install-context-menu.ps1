@@ -95,6 +95,10 @@ if ($Mode -eq 'Modern') {
 $classId = '{67B51BA1-8A78-4B4B-A5F9-08A825BE91F8}'
 $classKey = "HKCU:\Software\Classes\CLSID\$classId"
 $menuKey = 'HKCU:\Software\Classes\*\shell\TheConverter'
+# Canonical AQS uses only the fast file-extension property, independent of locale.
+# Keep this input whitelist aligned with target_mask in the Explorer DLL.
+$classicExtensions = @('mp3', 'mpga', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus', 'wma', 'aiff', 'aif', 'alac', 'ape', 'mp4', 'mkv', 'mov', 'avi', 'webm', 'wmv', 'm4v', 'mpeg', 'mpg', 'ts', 'mts', 'm2ts', '3gp', 'flv', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'gif', 'ico', 'pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'xlsx', 'xls', 'ods', 'ppt', 'pptx', 'odp')
+$appliesTo = ($classicExtensions | ForEach-Object { 'System.FileExtension:=".' + $_ + '"' }) -join ' OR '
 if ($PSCmdlet.ShouldProcess('HKCU\Software\Classes', 'Installa il comando classico The Converter')) {
     New-Item -Path $classKey -Force | Out-Null
     Set-Item -LiteralPath $classKey -Value 'The Converter Explorer Command'
@@ -106,5 +110,6 @@ if ($PSCmdlet.ShouldProcess('HKCU\Software\Classes', 'Installa il comando classi
     New-ItemProperty -LiteralPath $menuKey -Name 'Icon' -Value ('"' + $executable + '",0') -PropertyType String -Force | Out-Null
     New-ItemProperty -LiteralPath $menuKey -Name 'ExplorerCommandHandler' -Value $classId -PropertyType String -Force | Out-Null
     New-ItemProperty -LiteralPath $menuKey -Name 'MultiSelectModel' -Value 'Player' -PropertyType String -Force | Out-Null
+    New-ItemProperty -LiteralPath $menuKey -Name 'AppliesTo' -Value $appliesTo -PropertyType String -Force | Out-Null
     Write-Host 'Menu classico installato per questo utente. Su Windows 11 si trova in Mostra altre opzioni.'
 }

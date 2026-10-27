@@ -31,6 +31,63 @@ const ECS_DISABLED: u32 = 1;
 const ECS_HIDDEN: u32 = 2;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_SELECTION: u32 = 10_000;
+const UNKNOWN_SELECTION_MASK: u32 = u32::MAX;
+const SELECTION_CONTAINS_AUDIO: u32 = 1 << 31;
+const AUDIO_TARGETS: u32 = (1 << 7) - 1;
+const TEXT_TARGET: u32 = 1 << 20;
+const OPENAI_CREDENTIAL_TARGET: &str = "Corsivo.TheConverter.OpenAI";
+
+#[repr(C)]
+struct Credential {
+    flags: u32,
+    kind: u32,
+    target_name: *mut u16,
+    comment: *mut u16,
+    last_written: [u32; 2],
+    blob_size: u32,
+    blob: *mut u8,
+    persist: u32,
+    attribute_count: u32,
+    attributes: *mut c_void,
+    target_alias: *mut u16,
+    user_name: *mut u16,
+}
+
+#[link(name = "advapi32")]
+extern "system" {
+    fn CredReadW(target: *const u16, kind: u32, flags: u32, out: *mut *mut Credential) -> i32;
+    fn CredFree(buffer: *mut c_void);
+}
+
+fn credential_metadata_available(credential: &Credential) -> bool {
+    credential.kind == 1
+        && !credential.blob.is_null()
+        && (20..=2048).contains(&credential.blob_size)
+}
+
+fn transcription_key_available() -> bool {
+    let target: Vec<u16> = OPENAI_CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut credential = ptr::null_mut();
+    unsafe {
+        if CredReadW(target.as_ptr(), 1, 0, &mut credential) == 0 || credential.is_null() {
+            return false;
+        }
+        // Only inspect metadata. The DLL never copies, decodes or logs the key.
+        let available = credential_metadata_available(&*credential);
+        if !(*credential).blob.is_null() && (*credential).blob_size <= 2560 {
+            // WinCred owns this temporary copy, not the saved credential. Wipe
+            // it without reading it before returning the allocation to WinCred.
+            for offset in 0..(*credential).blob_size as usize {
+                ptr::write_volatile((*credential).blob.add(offset), 0);
+            }
+        }
+        CredFree(credential.cast());
+        available
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -77,6 +134,15 @@ const TARGETS: [&str; 21] = [
     "mp3", "wav", "flac", "aac", "ogg", "opus", "aiff", "mp4", "mkv", "mov", "webm", "avi", "gif",
     "png", "jpg", "webp", "bmp", "tiff", "ico", "pdf", "txt",
 ];
+const ALL_TARGETS: u32 = (1 << TARGETS.len()) - 1;
+
+fn text_target_title(selection: u32) -> &'static str {
+    if selection != UNKNOWN_SELECTION_MASK && selection & SELECTION_CONTAINS_AUDIO != 0 {
+        "TXT con OpenAI"
+    } else {
+        "TXT"
+    }
+}
 
 #[link(name = "shlwapi")]
 extern "system" {
@@ -139,6 +205,7 @@ struct ExplorerObject {
     header: ComObject<ExplorerVtable>,
     target: Option<String>,
     parent: bool,
+    selection_mask: AtomicU32,
 }
 
 #[repr(C)]
@@ -154,6 +221,7 @@ struct EnumeratorVtable {
 struct EnumeratorObject {
     header: ComObject<EnumeratorVtable>,
     cursor: AtomicUsize,
+    mask: u32,
 }
 
 static FACTORY_VTABLE: FactoryVtable = FactoryVtable {
@@ -209,10 +277,11 @@ fn allocate_command(target: Option<&str>, parent: bool) -> *mut c_void {
         },
         target: target.map(str::to_owned),
         parent,
+        selection_mask: AtomicU32::new(UNKNOWN_SELECTION_MASK),
     })) as *mut c_void
 }
 
-fn allocate_enumerator(cursor: usize) -> *mut c_void {
+fn allocate_enumerator(cursor: usize, mask: u32) -> *mut c_void {
     OBJECTS.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(Box::new(EnumeratorObject {
         header: ComObject {
@@ -220,6 +289,7 @@ fn allocate_enumerator(cursor: usize) -> *mut c_void {
             refs: AtomicU32::new(1),
         },
         cursor: AtomicUsize::new(cursor),
+        mask,
     })) as *mut c_void
 }
 
@@ -323,14 +393,24 @@ unsafe extern "system" fn enumerator_next(
         return E_POINTER;
     }
     let cursor = &(*(this as *mut EnumeratorObject)).cursor;
+    let mask = (*(this as *mut EnumeratorObject)).mask;
     let mut returned = 0;
     while returned < requested {
         let index = cursor.fetch_add(1, Ordering::AcqRel);
         if index > TARGETS.len() {
             break;
         }
+        if (index < TARGETS.len() && mask & (1 << index) == 0)
+            || (index == TARGETS.len() && mask & ALL_TARGETS == 0)
+        {
+            continue;
+        }
         let target = TARGETS.get(index).copied();
-        *out.add(returned as usize) = allocate_command(target, false);
+        let child = allocate_command(target, false);
+        (*(child as *mut ExplorerObject))
+            .selection_mask
+            .store(mask, Ordering::Release);
+        *out.add(returned as usize) = child;
         returned += 1;
     }
     if !fetched.is_null() {
@@ -343,14 +423,21 @@ unsafe extern "system" fn enumerator_next(
     }
 }
 unsafe extern "system" fn enumerator_skip(this: *mut c_void, count: u32) -> HResult {
-    let old = (*(this as *mut EnumeratorObject))
-        .cursor
-        .fetch_add(count as usize, Ordering::AcqRel);
-    if old.saturating_add(count as usize) <= TARGETS.len() + 1 {
-        S_OK
-    } else {
-        S_FALSE
+    let object = &*(this as *mut EnumeratorObject);
+    for _ in 0..count {
+        loop {
+            let index = object.cursor.fetch_add(1, Ordering::AcqRel);
+            if index > TARGETS.len() {
+                return S_FALSE;
+            }
+            if (index < TARGETS.len() && object.mask & (1 << index) != 0)
+                || (index == TARGETS.len() && object.mask & ALL_TARGETS != 0)
+            {
+                break;
+            }
+        }
     }
+    S_OK
 }
 unsafe extern "system" fn enumerator_reset(this: *mut c_void) -> HResult {
     (*(this as *mut EnumeratorObject))
@@ -366,6 +453,7 @@ unsafe extern "system" fn enumerator_clone(this: *mut c_void, out: *mut *mut c_v
         (*(this as *mut EnumeratorObject))
             .cursor
             .load(Ordering::Acquire),
+        (*(this as *mut EnumeratorObject)).mask,
     );
     S_OK
 }
@@ -422,6 +510,7 @@ unsafe extern "system" fn explorer_title(
         string_result("Converti in", out)
     } else if let Some(target) = command.target.as_deref() {
         let label = match target {
+            "txt" => text_target_title(command.selection_mask.load(Ordering::Acquire)).to_owned(),
             "jpg" => "JPEG".to_owned(),
             "webp" => "WebP".to_owned(),
             "webm" => "WebM".to_owned(),
@@ -498,7 +587,12 @@ unsafe extern "system" fn explorer_enumerate(this: *mut c_void, out: *mut *mut c
     if !(*(this as *mut ExplorerObject)).parent {
         return E_NOTIMPL;
     }
-    *out = allocate_enumerator(0);
+    let mask = (*(this as *mut ExplorerObject))
+        .selection_mask
+        .load(Ordering::Acquire);
+    // Some callers enumerate before GetState. Only filter an actual per-object
+    // selection snapshot; child GetState and Invoke always validate their inputs.
+    *out = allocate_enumerator(0, mask);
     S_OK
 }
 
@@ -520,7 +614,7 @@ struct ItemVtable {
     bind: *const c_void,
     parent: *const c_void,
     display_name: unsafe extern "system" fn(*mut c_void, u32, *mut *mut u16) -> HResult,
-    attributes: *const c_void,
+    attributes: unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HResult,
     compare: *const c_void,
 }
 unsafe fn selection_count(items: *mut c_void) -> Result<u32, HResult> {
@@ -547,6 +641,12 @@ unsafe fn item_path(items: *mut c_void, index: u32) -> Result<PathBuf, HResult> 
         return Err(E_FAIL);
     }
     let item_vtable = *(item as *mut *const ItemVtable);
+    let mut attributes = 0;
+    let attributes_status = ((*item_vtable).attributes)(item, 0x60000000, &mut attributes);
+    if attributes_status < 0 || attributes & 0x20000000 != 0 || attributes & 0x40000000 == 0 {
+        ((*item_vtable).unknown.release)(item);
+        return Err(E_FAIL);
+    }
     let mut text = ptr::null_mut();
     let status = ((*item_vtable).display_name)(item, SIGDN_FILESYSPATH, &mut text);
     ((*item_vtable).unknown.release)(item);
@@ -566,13 +666,20 @@ unsafe fn item_path(items: *mut c_void, index: u32) -> Result<PathBuf, HResult> 
     CoTaskMemFree(text as *const c_void);
     Ok(path)
 }
-fn target_mask(path: &Path) -> u32 {
+fn target_mask(path: &Path, transcription_enabled: bool) -> u32 {
     let Some(extension) = path.extension().and_then(|s| s.to_str()) else {
         return 0;
     };
     match extension.to_ascii_lowercase().as_str() {
-        "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "opus" | "wma" | "aiff" | "aif"
-        | "alac" | "ape" => (1 << 7) - 1,
+        "mp3" | "mpga" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "opus" | "wma" | "aiff"
+        | "aif" | "alac" | "ape" => {
+            AUDIO_TARGETS
+                | if transcription_enabled {
+                    TEXT_TARGET
+                } else {
+                    0
+                }
+        }
         "mp4" | "mkv" | "mov" | "avi" | "webm" | "wmv" | "m4v" | "mpeg" | "mpg" | "ts" | "mts"
         | "m2ts" | "3gp" | "flv" => (1 << 13) - 1,
         "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff" | "gif" | "ico" => {
@@ -584,6 +691,26 @@ fn target_mask(path: &Path) -> u32 {
         _ => 0,
     }
 }
+
+fn common_target_mask<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+    transcription_enabled: bool,
+) -> u32 {
+    let mut paths = paths.into_iter();
+    let Some(first) = paths.next() else {
+        return 0;
+    };
+    paths.fold(target_mask(first, transcription_enabled), |mask, path| {
+        mask & target_mask(path, transcription_enabled)
+    })
+}
+
+fn needs_transcription_metadata(paths: &[PathBuf], target: Option<&str>) -> bool {
+    (target.is_none() || target == Some("txt"))
+        && paths
+            .iter()
+            .any(|path| target_mask(path, false) == AUDIO_TARGETS)
+}
 unsafe extern "system" fn explorer_state(
     this: *mut c_void,
     items: *mut c_void,
@@ -594,13 +721,19 @@ unsafe extern "system" fn explorer_state(
         return E_POINTER;
     }
     *out = ECS_HIDDEN;
+    let command = &*(this as *mut ExplorerObject);
+    command
+        .selection_mask
+        .store(UNKNOWN_SELECTION_MASK, Ordering::Release);
     let Ok(count) = selection_count(items) else {
         return S_OK;
     };
     if count == 0 {
+        command.selection_mask.store(0, Ordering::Release);
         return S_OK;
     }
     if count > MAX_SELECTION {
+        command.selection_mask.store(0, Ordering::Release);
         *out = ECS_DISABLED;
         return S_OK;
     }
@@ -609,21 +742,38 @@ unsafe extern "system" fn explorer_state(
         *out = ECS_DISABLED;
         return E_PENDING;
     }
-    let command = &*(this as *mut ExplorerObject);
     let required = command
         .target
         .as_deref()
         .and_then(|target| TARGETS.iter().position(|value| *value == target))
         .map(|index| 1 << index);
+    let mut paths = Vec::with_capacity(count as usize);
     for index in 0..count {
         match item_path(items, index) {
-            Ok(path)
-                if target_mask(&path) != 0
-                    && required.is_none_or(|mask| target_mask(&path) & mask != 0) => {}
-            _ => return S_OK,
+            Ok(path) => paths.push(path),
+            _ => {
+                command.selection_mask.store(0, Ordering::Release);
+                return S_OK;
+            }
         }
     }
-    *out = ECS_ENABLED;
+    let transcription_enabled = needs_transcription_metadata(&paths, command.target.as_deref())
+        && transcription_key_available();
+    let mask = common_target_mask(paths.iter().map(PathBuf::as_path), transcription_enabled);
+    let contains_audio = paths
+        .iter()
+        .any(|path| target_mask(path, false) == AUDIO_TARGETS);
+    command.selection_mask.store(
+        mask | if mask != 0 && contains_audio {
+            SELECTION_CONTAINS_AUDIO
+        } else {
+            0
+        },
+        Ordering::Release,
+    );
+    if mask != 0 && required.is_none_or(|required| mask & required != 0) {
+        *out = ECS_ENABLED;
+    }
     S_OK
 }
 
@@ -657,14 +807,35 @@ unsafe extern "system" fn explorer_invoke(
         Ok(count) if count > 0 && count <= MAX_SELECTION => count,
         _ => return E_FAIL,
     };
-    let mut paths = Vec::with_capacity(count as usize);
+    let mut selected_paths = Vec::with_capacity(count as usize);
     for index in 0..count {
         match item_path(items, index) {
-            Ok(path) => match path.to_str() {
-                Some(value) => paths.push(value.to_owned()),
-                None => return E_FAIL,
-            },
+            Ok(path) => selected_paths.push(path),
             Err(error) => return error,
+        }
+    }
+    let transcription_enabled =
+        needs_transcription_metadata(&selected_paths, command.target.as_deref())
+            && transcription_key_available();
+    let mask = common_target_mask(
+        selected_paths.iter().map(PathBuf::as_path),
+        transcription_enabled,
+    );
+    if mask == 0
+        || command.target.as_deref().is_some_and(|target| {
+            TARGETS
+                .iter()
+                .position(|value| *value == target)
+                .is_none_or(|index| mask & (1 << index) == 0)
+        })
+    {
+        return E_FAIL;
+    }
+    let mut paths = Vec::with_capacity(selected_paths.len());
+    for path in &selected_paths {
+        match path.to_str() {
+            Some(value) => paths.push(value.to_owned()),
+            None => return E_FAIL,
         }
     }
     let Some(executable) = executable_path() else {
@@ -845,6 +1016,34 @@ mod tests {
                 S_FALSE
             );
             assert_eq!(enumerator_release(enumerator), 0);
+            let filtered = allocate_enumerator(0, 1 << 19);
+            let mut filtered_children = [ptr::null_mut(); 3];
+            assert_eq!(
+                enumerator_next(filtered, 3, filtered_children.as_mut_ptr(), &mut fetched),
+                S_FALSE
+            );
+            assert_eq!(fetched, 2); // PDF, then custom settings; no impossible targets.
+            assert_eq!(
+                (*(filtered_children[0] as *mut ExplorerObject))
+                    .target
+                    .as_deref(),
+                Some("pdf")
+            );
+            assert!((*(filtered_children[1] as *mut ExplorerObject))
+                .target
+                .is_none());
+            for child in &filtered_children[..2] {
+                assert_eq!(explorer_release(*child), 0);
+            }
+            assert_eq!(enumerator_reset(filtered), S_OK);
+            assert_eq!(enumerator_skip(filtered, 1), S_OK);
+            assert_eq!(
+                enumerator_next(filtered, 1, &mut custom, &mut fetched),
+                S_OK
+            );
+            assert!((*(custom as *mut ExplorerObject)).target.is_none());
+            assert_eq!(explorer_release(custom), 0);
+            assert_eq!(enumerator_release(filtered), 0);
             assert_eq!(explorer_release(command), 0);
             assert_eq!(factory_lock(factory, 1), S_OK);
             assert_eq!(factory_release(factory), 0);
@@ -863,11 +1062,11 @@ mod tests {
                 .filter_map(|(index, value)| (mask & (1 << index) != 0).then_some(*value))
                 .collect::<Vec<_>>()
         };
-        let audio = target_mask(Path::new("musica.WAV"));
-        let video = target_mask(Path::new("clip.mp4"));
-        let image = target_mask(Path::new("foto.png"));
-        let pdf = target_mask(Path::new("documento.pdf"));
-        let document = target_mask(Path::new("testo.docx"));
+        let audio = target_mask(Path::new("musica.WAV"), false);
+        let video = target_mask(Path::new("clip.mp4"), true);
+        let image = target_mask(Path::new("foto.png"), true);
+        let pdf = target_mask(Path::new("documento.pdf"), false);
+        let document = target_mask(Path::new("testo.docx"), true);
         assert_eq!(
             formats(audio & video),
             vec!["mp3", "wav", "flac", "aac", "ogg", "opus", "aiff"]
@@ -875,6 +1074,67 @@ mod tests {
         assert_eq!(formats(image & pdf), vec!["png", "jpg"]);
         assert_eq!(formats(document & image), vec!["pdf"]);
         assert_eq!(audio & image, 0);
-        assert_eq!(target_mask(Path::new("unknown.exe")), 0);
+        assert_eq!(target_mask(Path::new("unknown.exe"), true), 0);
+        for extension in [
+            "txt", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp",
+        ] {
+            assert_eq!(
+                formats(target_mask(Path::new(&format!("file.{extension}")), true)),
+                vec!["pdf"]
+            );
+        }
+        let audio_with_key = target_mask(Path::new("musica.mpga"), true);
+        assert_eq!(audio_with_key, audio | TEXT_TARGET);
+        assert_eq!(formats(audio_with_key & video), formats(audio)); // Video is never transcribed.
+        assert_eq!(formats(audio_with_key & pdf), vec!["txt"]);
+        assert_eq!(audio & pdf, 0);
+        let batch = [Path::new("testo.txt"), Path::new("foto.png")];
+        assert_eq!(formats(common_target_mask(batch, true)), vec!["pdf"]);
+        assert_eq!(
+            common_target_mask([Path::new("testo.txt"), Path::new("audio.wav")], true),
+            0
+        );
+        assert_eq!(
+            common_target_mask([Path::new("audio.wav"), Path::new("unknown.exe")], true),
+            0
+        );
+        assert_eq!(common_target_mask(std::iter::empty(), true), 0);
+        assert_eq!(text_target_title(UNKNOWN_SELECTION_MASK), "TXT");
+        assert_eq!(text_target_title(TEXT_TARGET), "TXT");
+        assert_eq!(
+            text_target_title(TEXT_TARGET | SELECTION_CONTAINS_AUDIO),
+            "TXT con OpenAI"
+        );
+    }
+
+    #[test]
+    fn credential_availability_reads_metadata_without_dereferencing_the_secret() {
+        let mut credential = Credential {
+            flags: 0,
+            kind: 1,
+            target_name: ptr::null_mut(),
+            comment: ptr::null_mut(),
+            last_written: [0, 0],
+            blob_size: 20,
+            blob: ptr::NonNull::<u8>::dangling().as_ptr(),
+            persist: 2,
+            attribute_count: 0,
+            attributes: ptr::null_mut(),
+            target_alias: ptr::null_mut(),
+            user_name: ptr::null_mut(),
+        };
+        assert!(credential_metadata_available(&credential));
+        credential.blob_size = 2048;
+        assert!(credential_metadata_available(&credential));
+        for length in [0, 19, 2049] {
+            credential.blob_size = length;
+            assert!(!credential_metadata_available(&credential));
+        }
+        credential.blob_size = 20;
+        credential.kind = 2;
+        assert!(!credential_metadata_available(&credential));
+        credential.kind = 1;
+        credential.blob = ptr::null_mut();
+        assert!(!credential_metadata_available(&credential));
     }
 }

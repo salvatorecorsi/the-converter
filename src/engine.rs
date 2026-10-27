@@ -31,14 +31,14 @@ pub struct Progress {
     pub message: String,
 }
 
-fn cancelled(cancel: &AtomicBool) -> Result<()> {
+pub(crate) fn cancelled(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
         bail!("Conversione annullata");
     }
     Ok(())
 }
 
-fn hidden(cmd: &mut Command) -> &mut Command {
+pub(crate) fn hidden(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -132,6 +132,16 @@ pub fn convert(
         message: "Preparazione…".into(),
     });
     let outputs = match kind {
+        MediaKind::Audio if settings.format == OutputFormat::Txt => {
+            vec![crate::transcription::transcribe(
+                &input,
+                &out_dir,
+                settings,
+                tools,
+                cancel,
+                &mut on_progress,
+            )?]
+        }
         MediaKind::Audio | MediaKind::Video => vec![convert_media(
             &input,
             &out_dir,
@@ -165,6 +175,9 @@ pub fn convert(
 }
 
 fn validate(s: &ConversionSettings) -> Result<()> {
+    if let Some(language) = &s.transcription.language {
+        crate::transcription::validate_language(language)?;
+    }
     if !(8..=512).contains(&s.audio.bitrate_kbps) {
         bail!("Il bitrate deve essere tra 8 e 512 kbps");
     }
@@ -212,7 +225,7 @@ fn validate(s: &ConversionSettings) -> Result<()> {
     Ok(())
 }
 
-fn temporary(dir: &Path, ext: &str) -> Result<NamedTempFile> {
+pub(crate) fn temporary(dir: &Path, ext: &str) -> Result<NamedTempFile> {
     Ok(tempfile::Builder::new()
         .prefix(".the-converter-")
         .suffix(&format!(".{ext}"))
@@ -220,7 +233,12 @@ fn temporary(dir: &Path, ext: &str) -> Result<NamedTempFile> {
 }
 
 /// persist_noclobber performs the final creation without replacing an existing file, including races.
-fn commit(mut temp: NamedTempFile, dir: &Path, stem: &str, ext: &str) -> Result<PathBuf> {
+pub(crate) fn commit(
+    mut temp: NamedTempFile,
+    dir: &Path,
+    stem: &str,
+    ext: &str,
+) -> Result<PathBuf> {
     if temp.as_file().metadata()?.len() == 0 {
         bail!("Il convertitore ha prodotto un file vuoto");
     }
@@ -241,7 +259,7 @@ fn commit(mut temp: NamedTempFile, dir: &Path, stem: &str, ext: &str) -> Result<
     bail!("Troppi file con lo stesso nome nella destinazione")
 }
 
-fn stem(input: &Path) -> String {
+pub(crate) fn stem(input: &Path) -> String {
     input
         .file_stem()
         .unwrap_or_default()
@@ -593,7 +611,7 @@ fn convert_media(
 }
 
 /// Bounded stderr capture and polled child handle ensure cancellation also works during silent tools.
-fn run_process(
+pub(crate) fn run_process(
     mut cmd: Command,
     cancel: &AtomicBool,
     duration: Option<f64>,

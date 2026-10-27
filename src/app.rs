@@ -13,7 +13,9 @@ use the_converter::{
     platform,
     queue::{self, JobState as QuickJobState, QueueJob},
     tools::{ToolPaths, executable_available},
+    transcription,
 };
+use zeroize::Zeroize;
 
 const ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
 const GREEN: Color32 = Color32::from_rgb(28, 135, 86);
@@ -192,9 +194,11 @@ pub struct ConverterApp {
     advanced: bool,
     notice: Option<String>,
     settings_dirty: bool,
-    requested_target: bool,
     quick_report: Option<SavedReport>,
     quick_queue: QuickQueueView,
+    api_key_input: String,
+    api_key_configured: bool,
+    api_key_status: Option<String>,
 }
 
 impl ConverterApp {
@@ -215,9 +219,11 @@ impl ConverterApp {
             advanced: false,
             notice: None,
             settings_dirty: false,
-            requested_target: target.is_some(),
             quick_report: load_report(),
             quick_queue: QuickQueueView::default(),
+            api_key_input: String::new(),
+            api_key_configured: transcription::has_api_key(),
+            api_key_status: None,
         };
         app.add_files(files);
         app
@@ -267,25 +273,25 @@ impl ConverterApp {
             ));
         }
         let common = self.common_formats();
-        if !self.requested_target
-            && !common.is_empty()
-            && !common.contains(&self.saved.settings.format)
-        {
+        if !common.is_empty() && !common.contains(&self.saved.settings.format) {
             self.saved.settings.format = common[0];
             self.settings_dirty = true;
         }
     }
 
     fn common_formats(&self) -> Vec<OutputFormat> {
-        if self.items.is_empty() {
-            return OutputFormat::ALL.to_vec();
-        }
-        let mut formats = supported_formats(MediaKind::from_path(&self.items[0].path));
-        for item in &self.items[1..] {
-            let supported = supported_formats(MediaKind::from_path(&item.path));
-            formats.retain(|format| supported.contains(format));
-        }
-        formats
+        the_converter::model::common_formats(
+            self.items.iter().map(|item| item.path.as_path()),
+            self.api_key_configured,
+        )
+    }
+
+    fn transcribes_audio(&self) -> bool {
+        self.saved.settings.format == OutputFormat::Txt
+            && self
+                .items
+                .iter()
+                .any(|item| MediaKind::from_path(&item.path) == MediaKind::Audio)
     }
 
     fn prerequisite(&self) -> Option<String> {
@@ -311,10 +317,19 @@ impl ConverterApp {
             ));
         }
         for item in &self.items {
-            if let Some(missing) = self
-                .tools
-                .missing_for(MediaKind::from_path(&item.path), self.saved.settings.format)
-            {
+            let kind = MediaKind::from_path(&item.path);
+            if kind == MediaKind::Audio && self.saved.settings.format == OutputFormat::Txt {
+                // Rendering can visit a large queue several times per frame.
+                // Credential access belongs to setup and execution, not this loop.
+                if !self.api_key_configured {
+                    return Some(
+                        "Aggiungi una chiave API OpenAI in Strumenti per trascrivere l’audio."
+                            .into(),
+                    );
+                }
+                continue;
+            }
+            if let Some(missing) = self.tools.missing_for(kind, self.saved.settings.format) {
                 return Some(missing);
             }
         }
@@ -445,7 +460,7 @@ impl ConverterApp {
                 if ui.button("Strumenti").clicked() {
                     self.show_tools = true;
                 }
-                ui.label(RichText::new("Tutto sul tuo PC").size(12.0).weak());
+                ui.label(RichText::new("Corsivo").size(12.0).weak());
             });
         });
     }
@@ -456,25 +471,54 @@ impl ConverterApp {
         ui.label(RichText::new("Formato di uscita").strong());
         let formats = self.common_formats();
         let before = self.saved.settings.format;
-        egui::ComboBox::from_id_salt("target_format")
-            .width(ui.available_width())
-            .selected_text(self.saved.settings.format.label())
-            .show_ui(ui, |ui| {
-                for format in formats {
-                    ui.selectable_value(&mut self.saved.settings.format, format, format.label());
-                }
-            });
+        let selected = if self.items.is_empty() {
+            "Aggiungi un file"
+        } else if formats.is_empty() {
+            "Nessun formato comune"
+        } else {
+            self.saved.settings.format.label()
+        };
+        ui.add_enabled_ui(!formats.is_empty(), |ui| {
+            egui::ComboBox::from_id_salt("target_format")
+                .width(ui.available_width())
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for format in formats {
+                        let label = if format == OutputFormat::Txt
+                            && self
+                                .items
+                                .iter()
+                                .any(|item| MediaKind::from_path(&item.path) == MediaKind::Audio)
+                        {
+                            "TXT con OpenAI"
+                        } else {
+                            format.label()
+                        };
+                        ui.selectable_value(&mut self.saved.settings.format, format, label);
+                    }
+                });
+        });
         self.settings_dirty |= before != self.saved.settings.format;
-        if before != self.saved.settings.format {
-            self.requested_target = false;
-            if matches!(
+        if before != self.saved.settings.format
+            && matches!(
                 self.saved.settings.format,
                 OutputFormat::Opus | OutputFormat::Webm
-            ) && ![0, 8000, 12000, 16000, 24000, 48000]
+            )
+            && ![0, 8000, 12000, 16000, 24000, 48000]
                 .contains(&self.saved.settings.audio.sample_rate)
-            {
-                self.saved.settings.audio.sample_rate = 0;
-            }
+        {
+            self.saved.settings.audio.sample_rate = 0;
+        }
+        if self.transcribes_audio() {
+            ui.label(RichText::new("L’audio verrà inviato a OpenAI Whisper con la tua chiave API. Si applicano i costi del tuo account OpenAI.").small());
+        } else if !self.api_key_configured
+            && self
+                .items
+                .iter()
+                .any(|item| MediaKind::from_path(&item.path) == MediaKind::Audio)
+            && ui.link("Abilita trascrizione in TXT…").clicked()
+        {
+            self.show_tools = true;
         }
         ui.add_space(7.0);
         ui.label(RichText::new("Qualità").strong());
@@ -580,6 +624,20 @@ impl ConverterApp {
     }
 
     fn advanced_settings(&mut self, ui: &mut egui::Ui) {
+        if self.transcribes_audio() {
+            ui.label("Lingua dell’audio");
+            let language = &mut self.saved.settings.transcription.language;
+            egui::ComboBox::from_id_salt("transcription_language")
+                .selected_text(transcription_language_label(language.as_deref()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(language, None, "Rileva automaticamente");
+                    for (code, name) in TRANSCRIPTION_LANGUAGES {
+                        ui.selectable_value(language, Some((*code).into()), *name);
+                    }
+                });
+            ui.label(RichText::new("Il testo mantiene la lingua parlata. Il risultato viene salvato in un file TXT UTF-8.").small().weak());
+            return;
+        }
         let kind = if self.saved.settings.format == OutputFormat::Gif
             && self
                 .items
@@ -992,12 +1050,10 @@ impl ConverterApp {
                                                     .clicked()
                                                     && let Some(parent) =
                                                         outputs.first().and_then(|p| p.parent())
-                                                {
-                                                    if let Err(error) =
+                                                    && let Err(error) =
                                                         platform::open_folder(parent)
-                                                    {
-                                                        self.notice = Some(format!("{error:#}"));
-                                                    }
+                                                {
+                                                    self.notice = Some(format!("{error:#}"));
                                                 }
                                             }
                                             JobState::Failed(_) => {
@@ -1105,10 +1161,9 @@ impl ConverterApp {
                             .on_hover_text(display_path(path));
                             if ui.small_button("Apri cartella").clicked()
                                 && let Some(parent) = path.parent()
+                                && let Err(error) = platform::open_folder(parent)
                             {
-                                if let Err(error) = platform::open_folder(parent) {
-                                    self.notice = Some(format!("{error:#}"));
-                                }
+                                self.notice = Some(format!("{error:#}"));
                             }
                         });
                     }
@@ -1235,9 +1290,10 @@ impl ConverterApp {
             .show(ctx, |ui| {
                 ui.label(RichText::new("Immagini e PDF da immagini, subito disponibili.").strong());
                 ui.label("Audio, video, pagine PDF e documenti Office usano strumenti opzionali. Se sono già installati, The Converter li rileva o ti permette di selezionarli.");
-                ui.label(RichText::new("I file vengono elaborati sul PC. I siti ufficiali si aprono nel browser; l’app non scarica né installa questi strumenti.").small().weak());
+                ui.label(RichText::new("Le conversioni standard avvengono sul PC. La trascrizione OpenAI facoltativa invia l’audio al servizio. I siti ufficiali si aprono nel browser.").small().weak());
                 ui.add_space(5.0);
                 egui::ScrollArea::vertical().id_salt("tools_scroll").max_height(470.0).show(ui, |ui| {
+                    self.openai_settings(ui);
                     for (key, label, description, website) in [
                         ("ffmpeg", "FFmpeg", "Necessario per audio, video e GIF da video.", "https://ffmpeg.org/download.html"),
                         ("ffprobe", "FFprobe", "Opzionale: durata dei media e avanzamento più preciso. Di solito è accanto a ffmpeg.exe.", "https://ffmpeg.org/ffprobe.html"),
@@ -1302,9 +1358,58 @@ impl ConverterApp {
                 ui.separator();
                 if ui.button("Rileva strumenti installati").clicked() {
                     self.tools = ToolPaths::configured(&self.saved.overrides);
+                    self.api_key_configured = transcription::has_api_key();
                 }
             });
         self.show_tools = opened;
+        if !opened {
+            self.api_key_input.zeroize();
+        }
+    }
+
+    fn openai_settings(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::new().fill(subtle_fill(ui)).corner_radius(7).inner_margin(11).show(ui, |ui| {
+            ui.label(RichText::new("OpenAI Whisper · audio in testo").strong());
+            ui.label(RichText::new("Facoltativo. L’audio viene inviato a OpenAI solo quando scegli TXT per una registrazione. I costi API sono a carico del tuo account; l’abbonamento ChatGPT non li include.").small());
+            ui.label(RichText::new("La chiave viene protetta da Windows per il tuo utente e non viene inclusa nelle preferenze, nella coda o nei resoconti.").small().weak());
+            ui.label(if self.api_key_configured { "Chiave salvata · trascrizione disponibile" } else { "Nessuna chiave salvata" });
+            ui.add_enabled_ui(!self.running, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.api_key_input).password(true).hint_text(if self.api_key_configured { "Nuova chiave API per sostituire quella salvata" } else { "Incolla la tua chiave API OpenAI" }).desired_width(f32::INFINITY));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!self.api_key_input.trim().is_empty(), egui::Button::new("Salva e abilita trascrizione")).clicked() {
+                        match transcription::save_api_key(self.api_key_input.trim()) {
+                            Ok(()) => {
+                                self.api_key_configured = true;
+                                self.api_key_status = Some("Chiave salvata. Nel menu degli audio è disponibile TXT con OpenAI; riapri il menu se era già aperto.".into());
+                                self.api_key_input.zeroize();
+                            }
+                            Err(error) => self.api_key_status = Some(format!("{error:#}")),
+                        }
+                    }
+                    if self.api_key_configured && ui.button("Rimuovi chiave").clicked() {
+                        match transcription::remove_api_key() {
+                            Ok(()) => {
+                                self.api_key_configured = false;
+                                self.api_key_input.zeroize();
+                                self.api_key_status = Some("Chiave rimossa. Le nuove trascrizioni sono disabilitate.".into());
+                                let formats = self.common_formats();
+                                if !formats.is_empty() && !formats.contains(&self.saved.settings.format) {
+                                    self.saved.settings.format = formats[0];
+                                    self.settings_dirty = true;
+                                }
+                            }
+                            Err(error) => self.api_key_status = Some(format!("{error:#}")),
+                        }
+                    }
+                    if ui.link("Crea una chiave API ↗").clicked()
+                        && let Err(error) = platform::open_website("https://platform.openai.com/api-keys") {
+                        self.api_key_status = Some(format!("{error:#}"));
+                    }
+                });
+            });
+            if let Some(status) = &self.api_key_status { ui.label(RichText::new(status).small()); }
+            ui.label(RichText::new("Modello whisper-1: OpenAI ne ha annunciato la dismissione per il 26 febbraio 2027.").small().weak());
+        });
     }
 }
 
@@ -1422,6 +1527,7 @@ impl eframe::App for ConverterApp {
 
 impl Drop for ConverterApp {
     fn drop(&mut self) {
+        self.api_key_input.zeroize();
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
@@ -1904,5 +2010,26 @@ fn get_tool(tools: &ToolPaths, key: &str) -> Option<PathBuf> {
         "pdftotext" => tools.pdftotext.clone(),
         "soffice" => tools.soffice.clone(),
         _ => None,
+    }
+}
+
+const TRANSCRIPTION_LANGUAGES: &[(&str, &str)] = &[
+    ("it", "Italiano"),
+    ("en", "Inglese"),
+    ("es", "Spagnolo"),
+    ("fr", "Francese"),
+    ("de", "Tedesco"),
+    ("pt", "Portoghese"),
+    ("ja", "Giapponese"),
+    ("zh", "Cinese"),
+];
+
+fn transcription_language_label(language: Option<&str>) -> &str {
+    match language {
+        None => "Rileva automaticamente",
+        Some(code) => TRANSCRIPTION_LANGUAGES
+            .iter()
+            .find(|(value, _)| *value == code)
+            .map_or(code, |(_, label)| *label),
     }
 }

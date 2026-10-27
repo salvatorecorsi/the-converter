@@ -56,6 +56,8 @@ In alternativa, aprire **Actions → Microsoft Store package → Run workflow** 
 
 Il pacchetto leggero offre subito conversioni immagini e immagini in PDF, coda, impostazioni e menu contestuale. FFmpeg serve per audio/video; Poppler per PDF in immagini/testo; LibreOffice per documenti Office in PDF. Sono programmi esterni gia disponibili sul PC o selezionati dall'utente nella finestra Strumenti. La build Store non deve includere il downloader PowerShell del setup EXE.
 
+La trascrizione audio TXT aggiunge un servizio online facoltativo, distinto dalle conversioni locali: usa la chiave OpenAI API dell'utente e invia l'audio a `api.openai.com` solo quando viene richiesta. Richiede internet e accesso API con eventuali costi a carico dell'utente, separati dall'abbonamento ChatGPT. Dichiarare invio, dipendenza e costi all'inizio delle schede e nel consenso in app. La chiave resta nel Gestore credenziali Windows; nessuna chiave e inclusa nel pacchetto, nelle preferenze, nei record della coda o nei log.
+
 La dipendenza va dichiarata all'inizio delle descrizioni: la policy 10.2.4 ammette software non integrato con questa trasparenza. E un percorso ragionevole da sottoporre alla certificazione, non un'approvazione garantita. Mantenere le funzioni native utilizzabili senza motori e messaggi chiari quando un motore manca. La policy 10.2.2 vieta l'introduzione dinamica di funzionalita incoerenti con quanto dichiarato. [Store policies](https://learn.microsoft.com/en-us/windows/apps/publish/store-policies#102-security).
 
 ## Capability e motivazione per la certificazione
@@ -68,6 +70,8 @@ Non aggiungere `unvirtualizedResources` per abitudine ereditandolo dal pacchetto
 
 ## Materiali e verifiche prima dell'invio
 
+Consultare lo [stato delle verifiche](store-validation.md): le prove su una preview precedente non certificano la build con trascrizione online.
+
 - [ ] Identita reale Partner Center configurata; nessun placeholder e nessuna firma di sviluppo presentata come firma pubblica.
 - [ ] Privacy completata con identita legale e contatto reali, pubblicata a un URL HTTPS accessibile. La policy 10.5.1 la richiede anche alle app Win32 senza telemetria. [Requisiti privacy](https://learn.microsoft.com/en-us/windows/apps/publish/store-policies#105-personal-information).
 - [ ] Schede [italiana](store-listing-it.md) e [inglese](store-listing-en.md) ricontrollate sul pacchetto finale; licenza, disponibilita, categorie e questionario IARC completati dal proprietario.
@@ -76,6 +80,9 @@ Non aggiungere `unvirtualizedResources` per abitudine ereditandolo dal pacchetto
 - [ ] Windows App Certification Kit eseguito sul MSIX completo; conservare il report. Controllare installazione, aggiornamento, disinstallazione e avvio da Start su ambiente pulito.
 - [ ] Verificati menu moderno, selezione multipla, conversione rapida senza finestra opzioni, segnaposto, annullamento, nomi duplicati e percorsi con spazi/accenti.
 - [ ] Provate le funzioni native senza motori; separatamente provati i motori opzionali e il selettore di eseguibili. Verificati percorsi di dati realmente usati sotto MSIX e comportamento della disinstallazione.
+- [ ] Verificati consenso e informativa per l'invio audio a OpenAI, salvataggio/rimozione della chiave, selezioni compatibili, errori API e assenza della chiave da preferenze/coda/resoconti. Non incorporare credenziali del proprietario per i certificatori.
+- [ ] Per la trascrizione: distinguere test con server simulato da richieste reali autorizzate. Non presentare test simulati come prova di disponibilita del servizio. Rivedere il backend `whisper-1` prima della dismissione annunciata per il 26 febbraio 2027. [Avviso OpenAI](https://developers.openai.com/api/docs/deprecations#2026-08-26-transcription-models).
+- [ ] Associare ogni report al pacchetto e al commit verificati. Le prove locali o WACK precedenti all'integrazione OpenAI non attestano il funzionamento della nuova trascrizione.
 - [ ] Nessun motore scaricato automaticamente, certificato di sviluppo, chiave privata o script di installazione esterno nell'artefatto Store.
 - [ ] Invio per certificazione e pubblicazione eseguiti soltanto dopo la revisione del proprietario.
 
@@ -85,9 +92,11 @@ Per il CSV attendere l'esportazione del prodotto reale da Partner Center: preser
 
 Usare il testo seguente dopo il collaudo del pacchetto completo e adattare i passi solo se la UI cambia:
 
-> The publisher brand is CORSIVO; the application is developed by Salvatore Corsi. The application UI is currently Italian. No account or login is required.
+> The publisher brand is CORSIVO; the application is developed by Salvatore Corsi. The application UI is currently Italian. Local conversions do not require an account or login. Optional online transcription requires the user's own OpenAI API key and separately billed API access; it does not use a ChatGPT subscription.
 >
 > The package includes native image conversion and image-to-PDF conversion. It does not bundle FFmpeg, Poppler or LibreOffice and does not automatically download them. Audio/video conversion requires FFmpeg; PDF page/text export requires Poppler; Office-to-PDF conversion requires LibreOffice. Existing local executables can be selected under Strumenti using Seleziona programma…. Missing engines are reported in the UI. These dependencies are disclosed at the start of the Store description.
+>
+> Optional audio-to-TXT uses OpenAI's whisper-1 model through HTTPS at api.openai.com/v1/audio/transcriptions. The app discloses audio upload and API charges before the user saves a key and enables transcription. Choosing TXT con OpenAI for an audio file initiates upload. Compatible smaller audio files can be sent directly; other audio files require local FFmpeg preparation. No developer-supplied credential is bundled. Native image/PDF tests below do not need an API key or a network request. Key storage uses Windows Credential Manager for the current user and excludes preferences, queue records, reports and logs. There is no video-to-TXT operation.
 >
 > To test without dependencies: launch The Converter from Start, add a PNG/JPEG using Aggiungi file or drag and drop, select a different image format or PDF, and press Converti file. Output is written beside the source unless the user selects another folder. Existing files are preserved through numbered output names.
 >

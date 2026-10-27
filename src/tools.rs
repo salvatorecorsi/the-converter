@@ -68,6 +68,9 @@ impl ToolPaths {
     }
     pub fn missing_for(&self, kind: MediaKind, format: OutputFormat) -> Option<String> {
         let missing = match kind {
+            MediaKind::Audio if format == OutputFormat::Txt => {
+                return (!crate::transcription::has_api_key()).then(|| "Per trascrivere con Whisper, aggiungi la tua chiave API OpenAI in Strumenti. L'audio verrà inviato a OpenAI.".to_owned());
+            }
             MediaKind::Audio | MediaKind::Video if !tool_exists(&self.ffmpeg) => Some(
                 "Per convertire audio e video serve FFmpeg. Apri Strumenti e seleziona ffmpeg.exe già installato sul PC.",
             ),

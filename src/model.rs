@@ -20,8 +20,8 @@ impl MediaKind {
             .to_ascii_lowercase()
             .as_str()
         {
-            "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "opus" | "aiff" | "aif" | "wma"
-            | "alac" | "ape" => Self::Audio,
+            "mp3" | "mpga" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "opus" | "aiff" | "aif"
+            | "wma" | "alac" | "ape" => Self::Audio,
             "mp4" | "m4v" | "mkv" | "mov" | "webm" | "avi" | "wmv" | "mpeg" | "mpg" | "mts"
             | "m2ts" | "ts" | "3gp" | "flv" => Self::Video,
             "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "ico" => Self::Image,
@@ -161,7 +161,7 @@ impl std::fmt::Display for OutputFormat {
 pub fn supported_formats(kind: MediaKind) -> Vec<OutputFormat> {
     use OutputFormat::*;
     match kind {
-        MediaKind::Audio => vec![Mp3, Wav, Flac, Aac, Ogg, Opus, Aiff],
+        MediaKind::Audio => vec![Mp3, Wav, Flac, Aac, Ogg, Opus, Aiff, Txt],
         MediaKind::Video => vec![
             Mp4, Mkv, Mov, Webm, Avi, Gif, Mp3, Wav, Flac, Aac, Ogg, Opus, Aiff,
         ],
@@ -170,6 +170,32 @@ pub fn supported_formats(kind: MediaKind) -> Vec<OutputFormat> {
         MediaKind::Document => vec![Pdf],
         MediaKind::Unknown => vec![],
     }
+}
+
+/// Formats shared by every input. Cloud transcription is opt-in; PDF text
+/// extraction stays available independently of an OpenAI credential.
+pub fn common_formats<'a>(
+    inputs: impl IntoIterator<Item = &'a Path>,
+    transcription_enabled: bool,
+) -> Vec<OutputFormat> {
+    let mut inputs = inputs.into_iter();
+    let Some(first) = inputs.next() else {
+        return Vec::new();
+    };
+    let formats_for = |path: &Path| {
+        let kind = MediaKind::from_path(path);
+        let mut formats = supported_formats(kind);
+        if kind == MediaKind::Audio && !transcription_enabled {
+            formats.retain(|format| *format != OutputFormat::Txt);
+        }
+        formats
+    };
+    let mut formats = formats_for(first);
+    for path in inputs {
+        let supported = formats_for(path);
+        formats.retain(|format| supported.contains(format));
+    }
+    formats
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +207,7 @@ pub struct ConversionSettings {
     pub video: VideoSettings,
     pub image: ImageSettings,
     pub pdf: PdfSettings,
+    pub transcription: TranscriptionSettings,
 }
 impl Default for ConversionSettings {
     fn default() -> Self {
@@ -191,8 +218,16 @@ impl Default for ConversionSettings {
             video: VideoSettings::default(),
             image: ImageSettings::default(),
             pdf: PdfSettings::default(),
+            transcription: TranscriptionSettings::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TranscriptionSettings {
+    /// None detects the recording's language. A credential is never serialized.
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

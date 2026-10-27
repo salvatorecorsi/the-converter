@@ -3,22 +3,71 @@
 param(
     [string]$LibraryPath,
     # Only point this at the output of an isolated argument-capture test helper.
-    [string]$InvokeCaptureFile
+    [string]$InvokeCaptureFile,
+    [switch]$ValidateRegistrationOnly
 )
 $ErrorActionPreference = 'Stop'
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$registration = Join-Path $PSScriptRoot 'install-context-menu.ps1'
+$installer = Join-Path $repo 'installer\TheConverter.iss'
+$shellSource = Join-Path $repo 'shell-extension\src\lib.rs'
+if ((Test-Path -LiteralPath $installer) -and (Test-Path -LiteralPath $shellSource)) {
+    $installSource = Get-Content -LiteralPath $registration -Raw
+    $list = [regex]::Match($installSource, '(?s)\$classicExtensions\s*=\s*@\((.*?)\)')
+    if (-not $list.Success) { throw 'Classic registration extension whitelist missing.' }
+    $extensions = @([regex]::Matches($list.Groups[1].Value, "'([a-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value })
+    $expectedQuery = ($extensions | ForEach-Object { 'System.FileExtension:=".' + $_ + '"' }) -join ' OR '
+    $line = @(Get-Content -LiteralPath $installer | Where-Object { $_ -match 'ValueName: "AppliesTo";' })
+    if ($line.Count -ne 1) { throw 'Installer must declare one classic AppliesTo filter.' }
+    $actualQuery = [regex]::Match($line[0], 'ValueData: "(.*)"; Tasks: contextmenu').Groups[1].Value.Replace('""', '"')
+    if ($actualQuery -cne $expectedQuery -or $installSource -notmatch "-Name 'AppliesTo' -Value \`$appliesTo") { throw 'Classic script and installer AppliesTo filters differ.' }
+    $rust = Get-Content -LiteralPath $shellSource -Raw
+    $maskSource = $rust.Substring($rust.IndexOf('fn target_mask('), $rust.IndexOf('fn common_target_mask') - $rust.IndexOf('fn target_mask('))
+    $shellExtensions = @([regex]::Matches($maskSource, '"([a-z0-9]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    if ((Compare-Object @($extensions | Sort-Object -Unique) $shellExtensions)) { throw 'Classic whitelist and shell input extensions differ.' }
+    if ($extensions -notcontains 'txt' -or $extensions -notcontains 'mpga' -or $extensions -contains 'exe' -or $extensions -contains 'unknown') { throw 'Unexpected classic whitelist capabilities.' }
+    Write-Output "Classic AppliesTo verified: $($extensions.Count) input extensions match DLL and installer; TXT documents included, unknown inputs excluded."
+} elseif ($ValidateRegistrationOnly) { throw 'Run registration-only validation from the source checkout.' }
+if ($ValidateRegistrationOnly) { return }
 if (-not $LibraryPath) {
     $adjacentLibrary = Join-Path $PSScriptRoot '..\the_converter_shell.dll'
     if (Test-Path -LiteralPath $adjacentLibrary -PathType Leaf) { $LibraryPath = $adjacentLibrary }
     else { $LibraryPath = Join-Path $PSScriptRoot '..\shell-extension\target\release\the_converter_shell.dll' }
 }
 $library = (Resolve-Path -LiteralPath $LibraryPath).Path
-if (-not ('ConverterShellSmoke' -as [type])) {
+if (-not ('ConverterShellSmokeV2' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
-public static class ConverterShellSmoke {
+public static class ConverterShellSmokeV2 {
+    [StructLayout(LayoutKind.Sequential)]
+    struct Credential {
+        public uint Flags, Type;
+        public IntPtr Target, Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public uint BlobSize;
+        public IntPtr Blob;
+        public uint Persist, AttributeCount;
+        public IntPtr Attributes, TargetAlias, UserName;
+    }
+    [DllImport("advapi32", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool CredReadW(string target, uint type, uint flags, out IntPtr credential);
+    [DllImport("advapi32")]
+    static extern void CredFree(IntPtr credential);
+    static bool ApiKeyPresent() {
+        IntPtr pointer;
+        if (!CredReadW("Corsivo.TheConverter.OpenAI", 1, 0, out pointer) || pointer == IntPtr.Zero) return false;
+        try {
+            var credential = (Credential)Marshal.PtrToStructure(pointer, typeof(Credential));
+            bool available = credential.Type == 1 && credential.Blob != IntPtr.Zero && credential.BlobSize >= 20 && credential.BlobSize <= 2048;
+            if (credential.Blob != IntPtr.Zero && credential.BlobSize <= 2560) {
+                for (int offset = 0; offset < credential.BlobSize; offset++) Marshal.WriteByte(credential.Blob, offset, 0);
+            }
+            return available;
+        } finally { CredFree(pointer); }
+    }
     [DllImport("kernel32", CharSet=CharSet.Unicode, SetLastError=true)]
     static extern IntPtr LoadLibrary(string path);
     [DllImport("kernel32", CharSet=CharSet.Ansi)]
@@ -90,6 +139,9 @@ public static class ConverterShellSmoke {
                 Check(SHParseDisplayName(files[index], IntPtr.Zero, out pidls[index], 0, out attributes));
             }
             Check(SHCreateShellItemArrayFromIDLists((uint)pidls.Length, pidls, out array));
+            uint parentState;
+            Check(((GetState)Slot(parent, 7, typeof(GetState)))(parent, array, 1, out parentState));
+            if (parentState != 0) return labels.ToArray();
             Check(((EnumCommands)Slot(parent, 10, typeof(EnumCommands)))(parent, out enumerator));
             var next = (NextCommand)Slot(enumerator, 3, typeof(NextCommand));
             for (;;) {
@@ -152,7 +204,7 @@ public static class ConverterShellSmoke {
             if (initialized >= 0) CoUninitialize();
         }
     }
-    public static string Run(string library, string supported, string unsupported, string audio, string video, string pdf, string document) {
+    public static string Run(string library, string supported, string unsupported, string audio, string video, string pdf, string document, string text, string mpga, string directory) {
         int initialized = CoInitializeEx(IntPtr.Zero, 2);
         IntPtr module = LoadLibrary(library), factory = IntPtr.Zero, command = IntPtr.Zero;
         if (module == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
@@ -175,7 +227,17 @@ public static class ConverterShellSmoke {
             Expect("Audio + video", Visible(command, audio, video), new string[]{"MP3", "WAV", "FLAC", "AAC", "OGG", "Opus", "AIFF", custom});
             Expect("PNG + PDF", Visible(command, supported, pdf), new string[]{"PNG", "JPEG", custom});
             Expect("DOCX + PNG", Visible(command, document, supported), new string[]{"PDF", custom});
-            Expect("PNG + audio", Visible(command, supported, audio), new string[]{custom});
+            Expect("PNG + audio", Visible(command, supported, audio), new string[]{});
+            Expect("Testo", Visible(command, text), new string[]{"PDF", custom});
+            Expect("Testo + audio", Visible(command, text, audio), new string[]{});
+            Expect("Cartella WAV", Visible(command, directory), new string[]{});
+            var audioFormats = new List<string>(new string[]{"MP3", "WAV", "FLAC", "AAC", "OGG", "Opus", "AIFF"});
+            bool keyAvailable = ApiKeyPresent();
+            if (keyAvailable) audioFormats.Add("TXT con OpenAI");
+            audioFormats.Add(custom);
+            Expect("Audio e mpga", Visible(command, audio, mpga), audioFormats.ToArray());
+            Expect("PDF", Visible(command, pdf), new string[]{"PNG", "JPEG", "TXT", custom});
+            Expect("Audio + PDF", Visible(command, audio, pdf), keyAvailable ? new string[]{"TXT con OpenAI", custom} : new string[]{});
             Expect("Sconosciuto", Visible(command, unsupported), new string[]{});
             Marshal.Release(command); command = IntPtr.Zero;
             Marshal.Release(factory); factory = IntPtr.Zero;
@@ -198,14 +260,18 @@ $audio = Join-Path ([IO.Path]::GetTempPath()) "the-converter-smoke-$token.wav"
 $video = Join-Path ([IO.Path]::GetTempPath()) "the-converter-smoke-$token.mp4"
 $pdf = Join-Path ([IO.Path]::GetTempPath()) "the-converter-smoke-$token.pdf"
 $document = Join-Path ([IO.Path]::GetTempPath()) "the-converter-smoke-$token.docx"
-$testFiles = @($supported, $unsupported, $audio, $video, $pdf, $document)
+$text = Join-Path ([IO.Path]::GetTempPath()) "the-converter-smoke-$token.txt"
+$mpga = Join-Path ([IO.Path]::GetTempPath()) "the-converter-smoke-$token.mpga"
+$directory = Join-Path ([IO.Path]::GetTempPath()) "the-converter-folder-$token.wav"
+$testFiles = @($supported, $unsupported, $audio, $video, $pdf, $document, $text, $mpga)
 try {
     foreach ($file in $testFiles) { [IO.File]::WriteAllBytes($file, [byte[]]@()) }
-    [ConverterShellSmoke]::Run($library, $supported, $unsupported, $audio, $video, $pdf, $document)
+    New-Item -ItemType Directory -Path $directory | Out-Null
+    [ConverterShellSmokeV2]::Run($library, $supported, $unsupported, $audio, $video, $pdf, $document, $text, $mpga, $directory)
     if ($InvokeCaptureFile) {
         foreach ($custom in @($false, $true)) {
             if (Test-Path -LiteralPath $InvokeCaptureFile) { throw 'Il file di cattura deve essere assente prima del test.' }
-            [ConverterShellSmoke]::CaptureInvoke($library, $InvokeCaptureFile, [string[]]@($audio, $video), $custom)
+            [ConverterShellSmokeV2]::CaptureInvoke($library, $InvokeCaptureFile, [string[]]@($audio, $video), $custom)
             $captured = [IO.File]::ReadAllLines($InvokeCaptureFile)
             if ($custom) {
                 if ($captured.Count -ne 2 -or $captured[0] -ne '--selection-file') { throw 'Invoke custom deve aprire GUI senza --quick.' }
@@ -228,4 +294,5 @@ try {
     foreach ($file in $testFiles) {
         if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
     }
+    if (Test-Path -LiteralPath $directory -PathType Container) { Remove-Item -LiteralPath $directory -Force }
 }

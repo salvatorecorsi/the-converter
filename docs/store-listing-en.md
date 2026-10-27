@@ -4,11 +4,11 @@ Draft for the complete MSIX, to be checked against the final package. Publisher:
 
 ## Short description
 
-Convert images and create PDFs from the Windows 11 context menu. Local queue and quality settings. Audio, video and other PDF conversions require optional external engines. App UI is Italian.
+Convert files from the Windows 11 context menu with a queue and custom settings. Optional online audio-to-text transcription uses OpenAI and your API key. External engines enable more formats. App UI is Italian.
 
 ## Description
 
-Image conversion and image-to-PDF conversion work immediately. Audio and video require FFmpeg; PDF page or text export requires Poppler; Office-to-PDF conversion requires LibreOffice. These optional programs are not included: select existing local executables in the Strumenti window. The application interface is currently Italian.
+Image and image-to-PDF conversion work immediately. Audio/video format conversion requires FFmpeg; PDF export requires Poppler; Office-to-PDF requires LibreOffice. These optional engines are not included. Optional OpenAI audio-to-text transcription requires internet, your API key and separate API billing, not a ChatGPT subscription; it uploads audio to OpenAI. FFmpeg prepares audio that cannot be sent directly. The application UI is Italian.
 
 The Converter brings conversion to the folder where you work. In the Windows 11 context menu, choose Converti in and a compatible format. The job joins a queue with your saved settings, without opening the options window every time.
 
@@ -20,7 +20,9 @@ With optional FFmpeg, convert audio to MP3, WAV, FLAC, AAC, OGG, Opus and AIFF; 
 
 With Poppler, export PDF pages to PNG/JPEG or extract embedded text. With LibreOffice, convert compatible documents, spreadsheets and presentations to PDF.
 
-Conversion runs on your PC. The app does not upload your files to a server and does not require an in-app account. Preferences, file paths, queue status and error details are stored locally.
+Format conversion runs on your PC. Audio is uploaded only when you select OpenAI audio-to-text transcription after enabling it with your API key. Windows Credential Manager protects the key, and you can remove it in settings. Local conversions do not require an in-app account. Preferences, file paths, queue status and error details are stored locally without the key.
+
+Speech transcription creates a TXT file with automatic language detection or an optional language selection. It is not directly available for video files. Review the result because recognition errors are possible. Requests already sent may incur costs even if you cancel the job.
 
 Limitations: OCR, PDF merging and PDF editing are not included. Animated image inputs and multipage TIFF inputs use their first frame or page. Each image produces its own PDF. Office document layout depends on LibreOffice and available fonts. The modern context menu requires Windows 11 x64. The application UI is Italian.
 
@@ -38,7 +40,8 @@ Adjust JPEG quality, image width and output folder
 Audio and video conversion with optional user-selected FFmpeg
 PDF export with Poppler and Office-to-PDF conversion with optional LibreOffice
 Preserve original files and use numbered output names for existing files
-Process files on your PC without in-app accounts or file uploads
+Local format conversion; audio is sent to OpenAI only for requested transcription
+Optional audio-to-text transcription with your OpenAI API key and separate API charges
 ```
 
 ## Search terms
@@ -60,6 +63,7 @@ conversion queue
 ```text
 Windows 11 x64 for the modern context menu
 FFmpeg for audio/video; Poppler for PDF export; LibreOffice for Office-to-PDF. Optional engines are not included. The application UI is Italian.
+Optional audio-to-text: internet, an OpenAI API key and separately billed API account; FFmpeg when audio preparation is needed. No ChatGPT subscription usage.
 ```
 
 ## What's new

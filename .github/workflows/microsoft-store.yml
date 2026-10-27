@@ -78,6 +78,7 @@ jobs:
             dist/store/**/submission-report.json
             dist/store/**/SUBMISSION-REPORT.md
             docs/store-submission.md
+            docs/store-validation.md
             docs/store-listing-it.md
             docs/store-listing-en.md
             docs/privacy.md

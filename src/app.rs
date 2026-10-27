@@ -1233,9 +1233,13 @@ impl ConverterApp {
                     );
                 }
                 ui.label(
-                    RichText::new("Nessun caricamento online. Nessuna sovrascrittura.")
-                        .small()
-                        .weak(),
+                    RichText::new(if self.transcribes_audio() {
+                        "Trascrizione online con OpenAI. Nessuna sovrascrittura."
+                    } else {
+                        "Conversioni di formato locali. Nessuna sovrascrittura."
+                    })
+                    .small()
+                    .weak(),
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

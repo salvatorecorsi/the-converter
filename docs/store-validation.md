@@ -18,6 +18,8 @@ I test di compatibilita verificano anche tutti gli abbinamenti non supportati de
 
 La trascrizione e stata provata con un server HTTP locale e una credenziale sintetica in una voce casuale separata del Gestore credenziali: nessuna chiave utente letta nei test, nessuna registrazione inviata a OpenAI e nessuna richiesta API a pagamento. Le prove coprono multipart Whisper, lingua, nome file generico, risultati UTF-8, unione di segmenti, quota, errori redatti, cancellazione durante la connessione e prima del salvataggio, dimensioni delle risposte e assenza di TXT parziali. Il mock e stato ripetuto anche sotto esecuzione parallela. Una prova con FFmpeg reale verifica la preparazione di un audio lungo in segmenti ordinati sotto la soglia di caricamento.
 
+La build locale installata e stata controllata anche tramite la GUI, senza inserire una chiave: pannello OpenAI, avviso di invio/costi, campo password e assenza dei formati finche non si aggiunge un file. Ulteriori prove sugli eseguibili installati verificano il rifiuto TXT → MP4, immagine → PDF e conversione rapida immagine → JPEG, con rimozione del segnaposto e della cartella delle prenotazioni. Il menu Windows 11 sparse e stato ripristinato; la DLL installata supera lo smoke test COM. Nessuna modifica agli archivi dei certificati durante questo aggiornamento.
+
 L'autenticazione, l'accesso al modello e la qualita della trascrizione sul servizio OpenAI reale restano da verificare con una chiave e un audio scelti dal proprietario. Non usare una chiave dello sviluppatore nel pacchetto o nei materiali pubblici.
 
 ## Pacchetti e certificazione

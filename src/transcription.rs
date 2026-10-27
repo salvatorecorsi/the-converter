@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 pub const CREDENTIAL_TARGET: &str = "Corsivo.TheConverter.OpenAI";
 const ENDPOINT: &str = "https://api.openai.com/v1/audio/transcriptions";
-const MODEL: &str = "whisper-1";
+const MODEL: &str = "gpt-transcribe";
 // Leave room below the API's 25MB limit, including multipart framing.
 const MAX_UPLOAD_BYTES: u64 = 24_000_000;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -283,7 +283,7 @@ fn prepare_audio(
         .context("Per preparare questo formato o un audio superiore a 24 MB serve FFmpeg. Seleziona ffmpeg.exe in Strumenti prima di trascrivere.")?;
     progress(Progress {
         fraction: 0.02,
-        message: "Preparazione locale dell’audio per Whisper…".into(),
+        message: "Preparazione locale dell’audio per OpenAI…".into(),
     });
     let mut command = Command::new(ffmpeg);
     command
@@ -337,7 +337,7 @@ fn prepare_audio(
     });
     parts.sort();
     if parts.is_empty() || parts.len() > 1000 {
-        bail!("Audio non preparabile per Whisper. Dividi la registrazione in file più brevi.");
+        bail!("Audio non preparabile per OpenAI. Dividi la registrazione in file più brevi.");
     }
     for part in &parts {
         let length = fs::metadata(part)?.len();
@@ -407,7 +407,7 @@ async fn transcribe_parts(
         progress(Progress {
             fraction: 0.1 + 0.85 * index as f32 / parts.len() as f32,
             message: format!(
-                "Trascrizione Whisper · parte {} di {} · invio a OpenAI…",
+                "Trascrizione GPT-Transcribe · parte {} di {} · invio a OpenAI…",
                 index + 1,
                 parts.len()
             ),
@@ -422,10 +422,10 @@ async fn transcribe_parts(
         let part = Part::bytes(bytes)
             .file_name(format!("audio.{extension}"))
             .mime_str(mime(path))
-            .map_err(|_| anyhow::anyhow!("Formato audio non valido per Whisper."))?;
+            .map_err(|_| anyhow::anyhow!("Formato audio non valido per OpenAI."))?;
         let mut form = Form::new()
             .text("model", MODEL)
-            .text("response_format", "text")
+            .text("response_format", "json")
             .part("file", part);
         if let Some(language) = settings
             .transcription
@@ -434,7 +434,8 @@ async fn transcribe_parts(
             .map(str::trim)
             .filter(|v| !v.is_empty())
         {
-            form = form.text("language", language.to_ascii_lowercase());
+            // Keep persisted single-language settings compatible, using the model's array field.
+            form = form.text("languages[]", language.to_ascii_lowercase());
         }
         let bearer = Zeroizing::new(format!("Bearer {key}"));
         let mut authorization = HeaderValue::from_bytes(bearer.as_bytes())
@@ -459,9 +460,7 @@ async fn transcribe_parts(
         if !status.is_success() {
             return Err(api_error(status, &body));
         }
-        let text = std::str::from_utf8(&body)
-            .map_err(|_| anyhow::anyhow!("OpenAI ha restituito un testo non valido."))?
-            .trim();
+        let text = parse_transcript(&body)?;
         if !text.is_empty() {
             if wrote_text {
                 output.as_file_mut().write_all(b"\n\n")?;
@@ -472,7 +471,7 @@ async fn transcribe_parts(
         progress(Progress {
             fraction: 0.1 + 0.85 * (index + 1) as f32 / parts.len() as f32,
             message: format!(
-                "Trascrizione Whisper · parte {} di {} completata",
+                "Trascrizione GPT-Transcribe · parte {} di {} completata",
                 index + 1,
                 parts.len()
             ),
@@ -481,13 +480,33 @@ async fn transcribe_parts(
     engine::cancelled(cancel)?;
     if !wrote_text {
         bail!(
-            "Whisper non ha riconosciuto parlato nell’audio. Nessun file di testo è stato creato."
+            "OpenAI non ha restituito testo dalla registrazione. Nessun file di testo è stato creato."
         );
     }
     output.as_file_mut().write_all(b"\n")?;
     output.as_file_mut().sync_all()?;
     engine::cancelled(cancel)?;
     engine::commit(output, dir, &engine::stem(input), "txt")
+}
+
+fn parse_transcript(body: &[u8]) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct TranscriptResponse {
+        text: String,
+    }
+    // serde structs can also accept positional sequences; the API contract requires an object.
+    if body.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+        bail!(
+            "OpenAI ha restituito un risultato di trascrizione non valido. Nessun file di testo è stato creato."
+        );
+    }
+    // Detected-language metadata is optional and not needed to write the transcript.
+    // In particular, languages: [] does not imply silence or a failed transcription.
+    let response: TranscriptResponse = serde_json::from_slice(body).map_err(|_| {
+        anyhow::anyhow!("OpenAI ha restituito un risultato di trascrizione non valido. Nessun file di testo è stato creato.")
+    })?;
+    // Silence in one chunk is valid; the caller rejects only an entirely empty transcript.
+    Ok(response.text.trim().to_owned())
 }
 
 async fn wait_http<T>(
@@ -545,7 +564,7 @@ fn api_error(status: StatusCode, body: &[u8]) -> anyhow::Error {
     let message = match status.as_u16() {
         401 => "Chiave API OpenAI non valida o revocata. Aggiornala in Strumenti.",
         403 => {
-            "La chiave o il progetto OpenAI non hanno accesso alla trascrizione Whisper. Controlla i permessi del progetto."
+            "La chiave o il progetto OpenAI non hanno accesso alla trascrizione. Controlla i permessi del progetto."
         }
         429 if insufficient_quota
             || matches!(
@@ -568,7 +587,7 @@ fn api_error(status: StatusCode, body: &[u8]) -> anyhow::Error {
             "OpenAI ha rifiutato il file perché troppo grande. Prepara segmenti audio inferiori a 25 MB."
         }
         404 | 410 => {
-            "Il modello whisper-1 non è disponibile per questo progetto o è stato ritirato. Nessun altro modello è stato usato."
+            "Il modello gpt-transcribe non è disponibile per questo progetto o è stato ritirato. Nessun altro modello è stato usato."
         }
         400 | 422 => {
             "OpenAI non ha accettato l’audio o le impostazioni. Verifica che contenga parlato e che il codice lingua sia supportato."
@@ -607,6 +626,12 @@ mod tests {
                 delay: Duration::ZERO,
                 declared_length: None,
             }
+        }
+        fn transcript(text: &str) -> Self {
+            Self::new(
+                200,
+                &serde_json::json!({"text":text,"languages":[]}).to_string(),
+            )
         }
     }
     fn server(replies: Vec<Reply>) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
@@ -670,7 +695,7 @@ mod tests {
                 requests.push(request);
                 thread::sleep(reply.delay);
                 let response = format!(
-                    "HTTP/1.1 {} Mock\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {} Mock\r\nContent-Length: {}\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\n\r\n{}",
                     reply.status,
                     reply.declared_length.unwrap_or(reply.body.len()),
                     reply.body
@@ -703,11 +728,12 @@ mod tests {
     const TEST_KEY: &str = "sk-local-http-test-not-a-real-key";
 
     #[test]
-    fn multipart_uses_whisper_language_and_private_filename_with_atomic_output() {
+    fn gpt_transcribe_json_preserves_unicode_newlines_and_accepts_empty_detected_languages() {
         let folder = tempfile::tempdir().unwrap();
         let source = input(folder.path(), "nome privato è.wav");
         fs::write(folder.path().join("nome privato è.txt"), b"existing text").unwrap();
-        let (endpoint, server) = server(vec![Reply::new(200, "Ciao, città!")]);
+        let spoken_text = "Ciao, città!\nSeconda riga: \"perché?\".";
+        let (endpoint, server) = server(vec![Reply::transcript(spoken_text)]);
         let output = runtime()
             .block_on(transcribe_parts(
                 &client(),
@@ -721,7 +747,10 @@ mod tests {
                 &mut |_| {},
             ))
             .unwrap();
-        assert_eq!(fs::read_to_string(&output).unwrap(), "Ciao, città!\n");
+        assert_eq!(
+            fs::read_to_string(&output).unwrap(),
+            format!("{spoken_text}\n")
+        );
         assert_eq!(
             fs::read(folder.path().join("nome privato è.txt")).unwrap(),
             b"existing text"
@@ -730,12 +759,216 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let request = String::from_utf8_lossy(&requests[0]);
         assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
-        assert!(request.contains("name=\"model\"\r\n\r\nwhisper-1"));
-        assert!(request.contains("name=\"response_format\"\r\n\r\ntext"));
-        assert!(request.contains("name=\"language\"\r\n\r\nit"));
+        assert!(request.contains("name=\"model\"\r\n\r\ngpt-transcribe"));
+        assert!(request.contains("name=\"response_format\"\r\n\r\njson"));
+        assert!(request.contains("name=\"languages[]\"\r\n\r\nit"));
+        assert!(!request.contains("name=\"language\""));
+        assert!(!request.contains("whisper-1"));
         assert!(request.contains("filename=\"audio.wav\""));
         assert!(!request.contains("nome privato"));
         assert_eq!(fs::read(source).unwrap(), b"RIFF-local-mock-audio");
+    }
+
+    #[test]
+    fn automatic_detection_omits_both_language_fields_and_accepts_missing_metadata() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = input(folder.path(), "source.wav");
+        let (endpoint, server) =
+            server(vec![Reply::new(200, r#"{"text":"Testo senza metadati"}"#)]);
+        let settings = ConversionSettings::default();
+        let output = runtime()
+            .block_on(transcribe_parts(
+                &client(),
+                &endpoint,
+                TEST_KEY,
+                std::slice::from_ref(&source),
+                &source,
+                folder.path(),
+                &settings,
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ))
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(output).unwrap(),
+            "Testo senza metadati\n"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = String::from_utf8_lossy(&requests[0]);
+        assert!(request.contains("name=\"model\"\r\n\r\ngpt-transcribe"));
+        assert!(!request.contains("name=\"languages[]\""));
+        assert!(!request.contains("name=\"language\""));
+        assert!(!request.contains("whisper-1"));
+    }
+
+    #[test]
+    fn malformed_or_blank_success_responses_never_become_text_files() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = input(folder.path(), "source.wav");
+        let out = folder.path().join("out");
+        fs::create_dir(&out).unwrap();
+        for response in [
+            "plain legacy text",
+            "{invalid JSON containing sk-local-http-test-not-a-real-key",
+            r#""top-level string""#,
+            r#"["positional text must not be accepted"]"#,
+            r#"{}"#,
+            r#"{"text":null}"#,
+            r#"{"text":42}"#,
+            r#"{"text":true}"#,
+            r#"{"text":[]}"#,
+            r#"{"text":""}"#,
+            r#"{"text":" \n\t "}"#,
+            r#"{"text":"first","text":"duplicate"}"#,
+        ] {
+            let (endpoint, server) = server(vec![Reply::new(200, response)]);
+            let result = runtime().block_on(transcribe_parts(
+                &client(),
+                &endpoint,
+                TEST_KEY,
+                std::slice::from_ref(&source),
+                &source,
+                &out,
+                &settings(),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ));
+            let error = result.unwrap_err();
+            assert!(!error.to_string().contains(TEST_KEY));
+            assert_eq!(server.join().unwrap().len(), 1);
+            assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+        }
+        assert_eq!(fs::read(source).unwrap(), b"RIFF-local-mock-audio");
+    }
+
+    #[test]
+    fn malformed_second_part_rolls_back_the_entire_transcription() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = input(folder.path(), "source.wav");
+        let parts = vec![
+            input(folder.path(), "part-000.mp3"),
+            input(folder.path(), "part-001.mp3"),
+        ];
+        let out = folder.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let (endpoint, server) = server(vec![
+            Reply::transcript("Valid first part"),
+            Reply::new(200, r#"{"text":42}"#),
+        ]);
+        let error = runtime()
+            .block_on(transcribe_parts(
+                &client(),
+                &endpoint,
+                TEST_KEY,
+                &parts,
+                &source,
+                &out,
+                &settings(),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("non valido"));
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn speech_silence_and_speech_keep_the_complete_nonempty_transcript() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = input(folder.path(), "source.wav");
+        let parts = vec![
+            input(folder.path(), "part-000.mp3"),
+            input(folder.path(), "part-001.mp3"),
+            input(folder.path(), "part-002.mp3"),
+        ];
+        let out = folder.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let (endpoint, server) = server(vec![
+            Reply::transcript("Prima parte"),
+            Reply::transcript(" \n\t "),
+            Reply::transcript("Ultima parte"),
+        ]);
+        let output = runtime()
+            .block_on(transcribe_parts(
+                &client(),
+                &endpoint,
+                TEST_KEY,
+                &parts,
+                &source,
+                &out,
+                &settings(),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ))
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(output).unwrap(),
+            "Prima parte\n\nUltima parte\n"
+        );
+        assert_eq!(server.join().unwrap().len(), 3);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn entirely_silent_chunks_fail_without_publishing_an_empty_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = input(folder.path(), "source.wav");
+        let parts = vec![
+            input(folder.path(), "part-000.mp3"),
+            input(folder.path(), "part-001.mp3"),
+        ];
+        let out = folder.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let (endpoint, server) = server(vec![Reply::transcript(""), Reply::transcript(" \n\t ")]);
+        let error = runtime()
+            .block_on(transcribe_parts(
+                &client(),
+                &endpoint,
+                TEST_KEY,
+                &parts,
+                &source,
+                &out,
+                &settings(),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("non ha restituito testo"));
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn unavailable_current_model_does_not_fall_back_to_whisper() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = input(folder.path(), "source.wav");
+        let (endpoint, server) = server(vec![Reply::new(
+            404,
+            r#"{"error":{"code":"model_not_found"}}"#,
+        )]);
+        let error = runtime()
+            .block_on(transcribe_parts(
+                &client(),
+                &endpoint,
+                TEST_KEY,
+                std::slice::from_ref(&source),
+                &source,
+                folder.path(),
+                &settings(),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("gpt-transcribe"));
+        assert!(!error.to_string().contains("whisper-1"));
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = String::from_utf8_lossy(&requests[0]);
+        assert!(request.contains("name=\"model\"\r\n\r\ngpt-transcribe"));
+        assert!(!request.contains("whisper-1"));
+        assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -749,7 +982,7 @@ mod tests {
         let out = folder.path().join("out");
         fs::create_dir(&out).unwrap();
         let (endpoint, server) = server(vec![
-            Reply::new(200, "prima parte"),
+            Reply::transcript("prima parte"),
             Reply::new(
                 401,
                 &format!(
@@ -775,8 +1008,8 @@ mod tests {
         assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
         assert_eq!(server.join().unwrap().len(), 2);
         let (endpoint, server) = self::server(vec![
-            Reply::new(200, "prima parte"),
-            Reply::new(200, "seconda parte"),
+            Reply::transcript("prima parte"),
+            Reply::transcript("seconda parte"),
         ]);
         let output = runtime()
             .block_on(transcribe_parts(
@@ -829,7 +1062,7 @@ mod tests {
     fn cancellation_during_http_wait_is_prompt_and_does_not_publish() {
         let folder = tempfile::tempdir().unwrap();
         let source = input(folder.path(), "source.wav");
-        let mut reply = Reply::new(200, "must not be saved");
+        let mut reply = Reply::transcript("must not be saved");
         reply.delay = Duration::from_secs(1);
         let (endpoint, server) = server(vec![reply]);
         let cancel = AtomicBool::new(false);
@@ -861,7 +1094,7 @@ mod tests {
     fn cancellation_after_response_still_prevents_output_commit() {
         let folder = tempfile::tempdir().unwrap();
         let source = input(folder.path(), "source.wav");
-        let (endpoint, server) = server(vec![Reply::new(200, "received but cancelled")]);
+        let (endpoint, server) = server(vec![Reply::transcript("received but cancelled")]);
         let cancel = AtomicBool::new(false);
         let result = runtime().block_on(transcribe_parts(
             &client(),

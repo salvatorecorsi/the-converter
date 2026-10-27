@@ -2,7 +2,15 @@
 
 Queste verifiche accompagnano la preparazione Store di Corsivo. Non equivalgono alla certificazione Microsoft e non sostituiscono l'identita reale di Partner Center.
 
-## Codice con trascrizione Whisper
+## Migrazione GPT-Transcribe
+
+Il backend corrente usa `gpt-transcribe` sullo stesso endpoint HTTPS di trascrizione. Richiede `response_format=json`, legge il campo `text` e conserva l'output finale TXT UTF-8. Il suggerimento di lingua gia salvato resta interoperabile: viene inviato come una sola voce `languages[]`; in modalita automatica il parametro e omesso. [Contratto ufficiale di migrazione](https://developers.openai.com/cookbook/examples/migrating_from_whisper_to_gpt_transcribe).
+
+Sul codice migrato sono superati `cargo test --locked --all-targets` con **75 test** e `cargo clippy --locked --lib --bins -- -D warnings`. I test della trascrizione sono 16 e usano un server HTTP locale: verificano richiesta GPT-Transcribe/JSON, `languages[]` senza parametro singolare, riconoscimento automatico, Unicode e righe del TXT, metadati lingua assenti o vuoti, compatibilita delle preferenze, risposte malformate e protezione della chiave. Non sono state effettuate richieste con chiavi reali o a pagamento.
+
+Sono verificati anche annullamento, errori redatti, assenza di fallback a Whisper e mancata pubblicazione di TXT parziali quando una parte fallisce. I segmenti silenziosi vengono saltati senza perdere il parlato delle altre parti; una trascrizione complessivamente vuota non crea un file. Preparazione FFmpeg e invio sequenziale rimangono invariati. Le prove GUI e i conteggi nella sezione seguente documentano la revisione precedente, non una prova del servizio GPT-Transcribe reale.
+
+## Verifiche della revisione precedente, con Whisper
 
 Eseguiti su Windows 11 x64, con Rust 1.99.1:
 
@@ -30,6 +38,6 @@ La preview completa 1.0.2.0 precedente a Whisper e stata installata localmente c
 
 Il report WACK locale della precedente preview **1.0.1.0**, eseguito con kit 10.0.26100.8249 su Windows 10.0.26200.0, ha risultato complessivo **WARNING**: 21 test PASS, due FAIL opzionali e un WARNING obbligatorio. I rilievi riguardavano il numero di applicazioni dichiarate, il rilevamento di eseguibili/avvio processi e la verifica DPI. Il pacchetto successivo dichiara una sola applicazione, esclude la CLI e usa API native per aprire cartelle e siti. L'uso legittimo di processi per i motori esterni resta parte del prodotto.
 
-**Il WACK non e stato ripetuto sul codice con Whisper e non viene dichiarato superato.** Prima della submission occorrono il report del candidato effettivo, la prova dell'interfaccia e del menu moderno, installazione/aggiornamento/disinstallazione su un ambiente pulito e le verifiche con i motori opzionali. Microsoft considera il WACK un controllo locale deprecato: il suo esito non garantisce l'approvazione Store. [Validazione locale MSIX](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps#validate-your-app-package-locally).
+**Il precedente report WACK non verifica il codice migrato a GPT-Transcribe e non viene dichiarato superato.** Prima della submission occorrono il report del candidato effettivo, la prova dell'interfaccia e del menu moderno, installazione/aggiornamento/disinstallazione su un ambiente pulito e le verifiche con i motori opzionali. Microsoft considera il WACK un controllo locale deprecato: il suo esito non garantisce l'approvazione Store. [Validazione locale MSIX](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps#validate-your-app-package-locally).
 
 I dati dell'account Corsivo, l'identita del prodotto, gli URL privacy/supporto, i contatti reali e l'invio a Microsoft restano da completare secondo la [procedura di submission](store-submission.md).

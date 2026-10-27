@@ -90,4 +90,10 @@ fn old_settings_load_without_a_key_or_transcription_configuration() {
     assert_eq!(settings.transcription.language, None);
     let json = serde_json::to_string(&settings).unwrap();
     assert!(!json.contains("api_key"));
+    let saved_with_language: ConversionSettings =
+        serde_json::from_str(r#"{"format":"Txt","transcription":{"language":"it"}}"#).unwrap();
+    assert_eq!(
+        saved_with_language.transcription.language.as_deref(),
+        Some("it")
+    );
 }

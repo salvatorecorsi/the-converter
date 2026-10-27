@@ -510,7 +510,7 @@ impl ConverterApp {
             self.saved.settings.audio.sample_rate = 0;
         }
         if self.transcribes_audio() {
-            ui.label(RichText::new("L’audio verrà inviato a OpenAI Whisper con la tua chiave API. Si applicano i costi del tuo account OpenAI.").small());
+            ui.label(RichText::new("L’audio verrà inviato a OpenAI con la tua chiave API. Si applicano i costi del tuo account OpenAI.").small());
         } else if !self.api_key_configured
             && self
                 .items
@@ -1373,7 +1373,7 @@ impl ConverterApp {
 
     fn openai_settings(&mut self, ui: &mut egui::Ui) {
         egui::Frame::new().fill(subtle_fill(ui)).corner_radius(7).inner_margin(11).show(ui, |ui| {
-            ui.label(RichText::new("OpenAI Whisper · audio in testo").strong());
+            ui.label(RichText::new("OpenAI · audio in testo").strong());
             ui.label(RichText::new("Facoltativo. L’audio viene inviato a OpenAI solo quando scegli TXT per una registrazione. I costi API sono a carico del tuo account; l’abbonamento ChatGPT non li include.").small());
             ui.label(RichText::new("La chiave viene protetta da Windows per il tuo utente e non viene inclusa nelle preferenze, nella coda o nei resoconti.").small().weak());
             ui.label(if self.api_key_configured { "Chiave salvata · trascrizione disponibile" } else { "Nessuna chiave salvata" });
@@ -1412,7 +1412,7 @@ impl ConverterApp {
                 });
             });
             if let Some(status) = &self.api_key_status { ui.label(RichText::new(status).small()); }
-            ui.label(RichText::new("Modello whisper-1: OpenAI ne ha annunciato la dismissione per il 26 febbraio 2027.").small().weak());
+            ui.label(RichText::new("Modello GPT-Transcribe · trascrizione nella lingua parlata.").small().weak());
         });
     }
 }

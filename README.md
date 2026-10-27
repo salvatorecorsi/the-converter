@@ -47,7 +47,7 @@ Per default i risultati sono accanto agli originali. Se il nome esiste già, vie
 | Sorgente | Destinazioni | Motore |
 | --- | --- | --- |
 | Audio: MP3, MPGA, WAV, FLAC, AAC, M4A, OGG, Opus, AIFF, WMA, ALAC, APE | MP3, WAV, FLAC, AAC, OGG, Opus, AIFF | FFmpeg |
-| Audio supportati | TXT, trascrizione del parlato | OpenAI Whisper facoltativo; FFmpeg per preparare formati non accettati direttamente o file grandi |
+| Audio supportati | TXT, trascrizione del parlato | OpenAI GPT-Transcribe facoltativo; FFmpeg per preparare formati non accettati direttamente o file grandi |
 | Video: MP4, MKV, MOV, WebM, AVI, WMV, MPEG, M4V, TS, MTS, M2TS, 3GP, FLV | MP4, MKV, MOV, WebM, AVI, GIF animato; estrazione audio nei sette formati sopra | FFmpeg |
 | Immagini: PNG, JPEG, WebP, BMP, TIFF, GIF, ICO | PNG, JPEG, WebP, BMP, TIFF, GIF, ICO, PDF | Rust, senza programmi esterni |
 | PDF | PNG/JPEG, una immagine per pagina; TXT con testo incorporato | Poppler |
@@ -59,17 +59,19 @@ Impostazioni disponibili: preset leggero/bilanciato/alta qualità, bitrate, freq
 
 ### Trascrizione audio TXT con OpenAI, facoltativa
 
-In **Strumenti → OpenAI Whisper · audio in testo**, inserisci una tua chiave API e scegli **Salva e abilita trascrizione**. Windows la conserva nel Gestore credenziali dell'utente corrente, con voce `Corsivo.TheConverter.OpenAI`: non viene scritta in preferenze, coda, resoconti o log. **Rimuovi chiave** disabilita le nuove trascrizioni. Le altre conversioni funzionano anche senza chiave.
+In **Strumenti → OpenAI · audio in testo**, inserisci una tua chiave API e scegli **Salva e abilita trascrizione**. Windows la conserva nel Gestore credenziali dell'utente corrente, con voce `Corsivo.TheConverter.OpenAI`: non viene scritta in preferenze, coda, resoconti o log. **Rimuovi chiave** disabilita le nuove trascrizioni. Le altre conversioni funzionano anche senza chiave.
 
 La credenziale Windows e separata dai file dell'app e non viene eliminata automaticamente disinstallando il setup EXE o il pacchetto MSIX. Prima di disinstallare usa **Rimuovi chiave**; se l'app e gia stata rimossa, apri **Gestione credenziali → Credenziali Windows → Credenziali generiche** e rimuovi la voce `Corsivo.TheConverter.OpenAI` del tuo utente. Questo elimina la copia locale, senza revocare la chiave nel tuo account OpenAI.
 
-Dopo l'abilitazione, **TXT con OpenAI** e disponibile per gli audio compatibili con l'app. Sceglierlo avvia una trascrizione online: l'audio viene inviato via HTTPS a `api.openai.com/v1/audio/transcriptions`, usando il modello `whisper-1`. Puoi lasciare il riconoscimento automatico della lingua o indicarne una. I video non hanno questa destinazione: prima estrai l'audio in un formato supportato. Il TXT da un PDF rimane invece estrazione locale con Poppler, senza OpenAI.
+Dopo l'abilitazione, **TXT con OpenAI** e disponibile per gli audio compatibili con l'app. Sceglierlo avvia una trascrizione online: l'audio viene inviato via HTTPS a `api.openai.com/v1/audio/transcriptions`, usando il modello `gpt-transcribe`. Puoi lasciare il riconoscimento automatico della lingua o indicarne una. I video non hanno questa destinazione: prima estrai l'audio in un formato supportato. Il TXT da un PDF rimane invece estrazione locale con Poppler, senza OpenAI.
 
 Occorre un account OpenAI API con accesso e fatturazione disponibili. Gli eventuali costi sono a carico di quell'account, separati dall'abbonamento ChatGPT; The Converter non acquista credito e non include chiamate API. Verifica le [tariffe OpenAI](https://developers.openai.com/api/docs/pricing) prima dell'uso.
 
 Gli audio in un formato accettato direttamente e fino alla soglia prudenziale di 24 MB (24.000.000 byte) vengono inviati senza FFmpeg. Negli altri casi FFmpeg prepara localmente MP3 mono a 16 kHz/64 kbit/s, suddivisi in segmenti di circa 20 minuti; l'app li invia in sequenza e unisce i testi. OpenAI documenta un limite di 25 MB per file. Il TXT viene pubblicato soltanto a lavoro completo; non ci sono tentativi automatici dopo un errore. Annullare non ritira l'audio gia inviato e non annulla eventuali costi maturati. [Requisiti dell'API](https://developers.openai.com/api/docs/guides/speech-to-text).
 
-Il testo mantiene la lingua parlata, senza traduzione, timestamp o riconoscimento dei parlanti. La trascrizione puo contenere errori e va riletta. Il backend richiesto resta `whisper-1`: al 27 ottobre 2026 OpenAI ne ha annunciato la dismissione per il **26 febbraio 2027**; sara necessario un aggiornamento prima di tale data. [Avviso ufficiale](https://developers.openai.com/api/docs/deprecations#2026-08-26-transcription-models). Dettagli sul trattamento dei dati: [privacy](docs/privacy.md).
+Il backend richiede una risposta JSON da GPT-Transcribe ed estrae il campo `text` per creare il normale file TXT UTF-8: il risultato per l'utente resta un documento di testo. La preferenza salvata `transcription.language` rimane compatibile; quando impostata viene inviata come una sola voce `languages[]`, mentre il riconoscimento automatico non invia un suggerimento di lingua. [Contratto di migrazione OpenAI](https://developers.openai.com/cookbook/examples/migrating_from_whisper_to_gpt_transcribe).
+
+Il testo mantiene la lingua parlata, senza traduzione, timestamp o riconoscimento dei parlanti. La trascrizione puo contenere errori e va riletta. Dettagli sul trattamento dei dati: [privacy](docs/privacy.md).
 
 ### Limiti espliciti
 

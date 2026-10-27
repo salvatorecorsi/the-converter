@@ -104,6 +104,70 @@ fn marker_path(output: &Path) -> Result<PathBuf> {
         .join(format!("{name}.json")))
 }
 
+fn ensure_reservation_directory(output_dir: &Path) -> Result<()> {
+    let directory = output_dir.join(RESERVATION_DIRECTORY);
+    loop {
+        let result = (|| -> Result<()> {
+            fs::create_dir_all(&directory)?;
+            if fs::symlink_metadata(&directory)?.file_type().is_symlink()
+                || fs::canonicalize(&directory)?.parent() != Some(output_dir)
+            {
+                bail!(
+                    "La cartella delle prenotazioni deve essere una sottocartella locale della destinazione"
+                );
+            }
+            set_hidden(&directory)
+        })();
+        // Another process may remove the empty namespace before our first marker exists.
+        if result.as_ref().is_err_and(|error| {
+            error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        }) {
+            continue;
+        }
+        return result;
+    }
+}
+
+fn create_marker(output_dir: &Path, marker: &Path) -> Result<Option<File>> {
+    loop {
+        ensure_reservation_directory(output_dir)?;
+        match OpenOptions::new().write(true).create_new(true).open(marker) {
+            Ok(file) => return Ok(Some(file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("Impossibile prenotare il nome del risultato"),
+        }
+    }
+}
+
+fn remove_empty_reservation_directory(output_dir: &Path) -> Result<()> {
+    let directory = output_dir.join(RESERVATION_DIRECTORY);
+    let result = (|| -> Result<()> {
+        if fs::symlink_metadata(&directory)?.file_type().is_symlink()
+            || fs::canonicalize(&directory)?.parent() != Some(output_dir)
+        {
+            bail!("La cartella delle prenotazioni non appartiene alla destinazione");
+        }
+        // remove_dir is atomic and never deletes markers belonging to queued/concurrent jobs.
+        fs::remove_dir(&directory).context("Impossibile pulire la cartella delle prenotazioni")
+    })();
+    match result {
+        Err(error)
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                )
+            }) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
+}
+
 #[cfg(windows)]
 fn set_hidden(path: &Path) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -157,18 +221,6 @@ pub fn prepare(
         .unwrap_or_else(|| input.parent().unwrap().to_owned());
     fs::create_dir_all(&destination).context("Impossibile creare la cartella di destinazione")?;
     let output_dir = fs::canonicalize(destination)?;
-    let reservation_dir = output_dir.join(RESERVATION_DIRECTORY);
-    fs::create_dir_all(&reservation_dir)?;
-    if fs::symlink_metadata(&reservation_dir)?
-        .file_type()
-        .is_symlink()
-        || fs::canonicalize(&reservation_dir)?.parent() != Some(output_dir.as_path())
-    {
-        bail!(
-            "La cartella delle prenotazioni deve essere una sottocartella locale della destinazione"
-        );
-    }
-    set_hidden(&reservation_dir)?;
     let id = next_id();
     let mut settings = settings.clone();
     settings.output_dir = Some(output_dir.clone());
@@ -223,14 +275,9 @@ fn reserve(plan: &PreparedConversion, stem: &str) -> Result<ReservedOutput> {
             continue;
         }
         let marker = marker_path(&path)?;
-        let mut file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error).context("Impossibile prenotare il nome del risultato"),
+        let mut file = match create_marker(&plan.output_dir, &marker)? {
+            Some(file) => file,
+            None => continue,
         };
         let reserved = ReservedOutput {
             path,
@@ -367,8 +414,9 @@ pub fn release_prepared(plan: &PreparedConversion) -> Result<()> {
             errors.push(error.to_string());
         }
     }
-    // Keep the empty hidden namespace: removing it can race a different process
-    // between create_dir_all and create_new while it is reserving its first output.
+    if let Err(error) = remove_empty_reservation_directory(&plan.output_dir) {
+        errors.push(error.to_string());
+    }
     if !errors.is_empty() {
         bail!("{}", errors.join("; "));
     }

@@ -91,6 +91,12 @@ fn separate_invocations_enqueue_immediately_and_only_one_worker_publishes() {
         assert!(image::open(&output).is_ok());
         assert!(!the_converter::pending::PendingLink::path_for(&output).exists());
     }
+    assert!(
+        !directory
+            .path()
+            .join(".the-converter-reservations")
+            .exists()
+    );
     assert_eq!(fs::read(source).unwrap(), original);
 }
 
@@ -161,4 +167,46 @@ fn cancelling_a_running_background_encoder_removes_preview_and_partial_media() {
     assert!(!output.exists());
     assert!(!the_converter::pending::PendingLink::path_for(&output).exists());
     assert!(!Path::new(job["plan"]["work_dir"].as_str().unwrap()).exists());
+    assert!(
+        !directory
+            .path()
+            .join(".the-converter-reservations")
+            .exists()
+    );
+}
+
+#[test]
+fn failed_background_conversion_releases_namespace_and_keeps_the_error_preview() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("queue");
+    let source = directory.path().join("broken.png");
+    fs::write(&source, b"not an image").unwrap();
+    let mut submitter = command(&root)
+        .args(["--quick", "--target", "jpg", "--files"])
+        .arg(&source)
+        .spawn()
+        .unwrap();
+    wait(&mut submitter);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let job = loop {
+        let job = jobs(&root).pop().unwrap();
+        if job["state"] == "Failed" {
+            break job;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "failed conversion did not finish"
+        );
+        thread::sleep(Duration::from_millis(30));
+    };
+    let output = PathBuf::from(job["outputs"][0].as_str().unwrap());
+    assert!(the_converter::pending::PendingLink::path_for(&output).is_file());
+    assert!(!output.exists());
+    assert!(
+        !directory
+            .path()
+            .join(".the-converter-reservations")
+            .exists()
+    );
+    assert_eq!(fs::read(source).unwrap(), b"not an image");
 }

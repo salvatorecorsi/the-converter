@@ -60,12 +60,7 @@ fn names_are_reserved_without_creating_invalid_media_and_survive_serialization()
         fs::read(folder.path().join("città & mare (1).jpg.lnk")).unwrap(),
         b"user link"
     );
-    assert_eq!(
-        fs::read_dir(folder.path().join(".the-converter-reservations"))
-            .unwrap()
-            .count(),
-        0
-    );
+    assert!(!folder.path().join(".the-converter-reservations").exists());
 }
 
 #[test]
@@ -98,7 +93,120 @@ fn simultaneous_jobs_get_distinct_durable_destinations() {
     for plan in &plans {
         engine::release_prepared(plan).unwrap();
     }
-    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
+    assert!(!folder.path().join(".the-converter-reservations").exists());
+}
+
+#[test]
+fn namespace_stays_until_the_last_job_releases_its_markers() {
+    let folder = tempfile::tempdir().unwrap();
+    let input = folder.path().join("source.png");
+    fixture(&input);
+    let first =
+        engine::prepare(&input, &settings(OutputFormat::Jpg), &ToolPaths::default()).unwrap();
+    let second =
+        engine::prepare(&input, &settings(OutputFormat::Jpg), &ToolPaths::default()).unwrap();
+    let namespace = folder.path().join(".the-converter-reservations");
+    engine::release_prepared(&first).unwrap();
+    assert!(namespace.is_dir());
+    assert!(second.outputs[0].marker.is_file());
+    engine::validate_prepared(&second).unwrap();
+    engine::release_prepared(&first).unwrap();
+    assert!(second.outputs[0].marker.is_file());
+    engine::release_prepared(&second).unwrap();
+    assert!(!namespace.exists());
+    engine::release_prepared(&first).unwrap();
+    engine::release_prepared(&second).unwrap();
+    assert!(!namespace.exists());
+    assert!(input.is_file());
+}
+
+#[test]
+fn namespace_with_an_unrelated_file_is_never_deleted() {
+    let folder = tempfile::tempdir().unwrap();
+    let input = folder.path().join("source.png");
+    fixture(&input);
+    let plan =
+        engine::prepare(&input, &settings(OutputFormat::Jpg), &ToolPaths::default()).unwrap();
+    let namespace = folder.path().join(".the-converter-reservations");
+    let unrelated = namespace.join("user-note.txt");
+    fs::write(&unrelated, b"preserve this file").unwrap();
+    engine::release_prepared(&plan).unwrap();
+    assert!(namespace.is_dir());
+    assert_eq!(fs::read(&unrelated).unwrap(), b"preserve this file");
+    assert!(!plan.outputs[0].marker.exists());
+    engine::release_prepared(&plan).unwrap();
+    assert_eq!(fs::read(unrelated).unwrap(), b"preserve this file");
+}
+
+#[test]
+fn malformed_pdf_does_not_leave_an_empty_reservation_namespace() {
+    let folder = tempfile::tempdir().unwrap();
+    let input = folder.path().join("truncated.pdf");
+    fs::write(&input, b"%PDF-1.7\ntruncated document").unwrap();
+    // Preparation reads PDF pages without launching a tool. This existing executable satisfies
+    // tool availability so the test reaches PDF validation even when Poppler is not installed.
+    let tools = ToolPaths {
+        pdftoppm: Some(std::env::current_exe().unwrap()),
+        ..Default::default()
+    };
+    let error = engine::prepare(&input, &settings(OutputFormat::Png), &tools).unwrap_err();
+    assert!(error.to_string().contains("pagine del PDF"));
+    assert!(!folder.path().join(".the-converter-reservations").exists());
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn concurrent_prepare_and_release_preserve_live_ownership_and_cleanup_when_idle() {
+    use std::collections::HashSet;
+    use std::sync::{Barrier, Mutex};
+    let folder = tempfile::tempdir().unwrap();
+    let input = folder.path().join("source.png");
+    fixture(&input);
+    let input = Arc::new(input);
+    let start = Arc::new(Barrier::new(8));
+    let live = Arc::new(Mutex::new(HashSet::new()));
+    let threads = (0..8)
+        .map(|_| {
+            let input = input.clone();
+            let start = start.clone();
+            let live = live.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..40 {
+                    let plan = engine::prepare(
+                        &input,
+                        &settings(OutputFormat::Jpg),
+                        &ToolPaths::default(),
+                    )
+                    .unwrap();
+                    {
+                        let mut active = live.lock().unwrap();
+                        assert!(
+                            active.insert(plan.outputs[0].path.clone()),
+                            "two live jobs reserved the same output"
+                        );
+                    }
+                    std::thread::yield_now();
+                    {
+                        // Hold the bookkeeping lock across release so a valid reuse after releasing
+                        // the marker cannot be mistaken for two simultaneous reservations.
+                        let mut active = live.lock().unwrap();
+                        engine::validate_prepared(&plan).unwrap();
+                        engine::release_prepared(&plan).unwrap();
+                        assert!(active.remove(&plan.outputs[0].path));
+                    }
+                    std::thread::yield_now();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert!(live.lock().unwrap().is_empty());
+    assert!(!folder.path().join(".the-converter-reservations").exists());
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -121,6 +229,7 @@ fn prepared_conversion_publishes_exact_name_and_preserves_owned_markers_until_re
     assert!(plan.outputs[0].marker.exists());
     engine::release_prepared(&plan).unwrap();
     assert!(outputs[0].exists());
+    assert!(!folder.path().join(".the-converter-reservations").exists());
 }
 
 #[test]
@@ -240,7 +349,8 @@ fn all_pdf_page_names_are_available_before_work_and_cancel_rolls_back_publicatio
     assert!(plan.outputs.iter().all(|output| !output.path.exists()));
     assert!(!plan.work_dir.exists());
     engine::release_prepared(&plan).unwrap();
-    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
+    assert!(!folder.path().join(".the-converter-reservations").exists());
 }
 
 #[test]

@@ -8,6 +8,8 @@ L’icona nel file manager è statica: indica il lavoro in attesa o in corso, se
 
 Le conversioni rapide condividono una coda persistente. Le richieste aggiunte mentre un’altra conversione è in corso attendono il proprio turno. La finestra delle opzioni non viene aperta automaticamente e chiudere una finestra di stato non annulla il lavoro. Per annullarlo occorre usare **Annulla**.
 
+La cartella nascosta `.the-converter-reservations` contiene soltanto le prenotazioni dei nomi dei risultati: impedisce che richieste simultanee scelgano lo stesso nome e mantiene quelli mostrati nei segnaposto. Viene eliminata automaticamente quando l'ultimo lavoro libera la propria prenotazione, anche dopo un errore o un annullamento. Finche ci sono altri lavori in coda per quella destinazione, conserva le loro prenotazioni.
+
 La finestra principale contiene **Coda conversioni rapide** con stato, nome del risultato, cartella di destinazione e dettagli degli eventuali errori. Si aggiorna automaticamente circa due volte al secondo. Rimane disponibile anche il resoconto dell’ultima conversione rapida.
 
 In caso di errore il segnaposto mostra una X rossa; un doppio clic apre la spiegazione. Un lavoro annullato rimuove il proprio segnaposto e i temporanei. I file già esistenti o creati da altri programmi non vengono sovrascritti. Un'interruzione forzata del processo viene riconosciuta al successivo avvio: il lavoro interrotto viene segnalato e gli altri lavori in attesa proseguono.
